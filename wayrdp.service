@@ -1,6 +1,6 @@
 [Unit]
 Description=wayRDP Server
-Documentation=https://github.com/alok/wayrdp
+Documentation=https://github.com/nobraincoder/wayRDP
 After=graphical-session.target
 PartOf=graphical-session.target
 
