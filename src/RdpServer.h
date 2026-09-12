@@ -96,6 +96,7 @@ private:
 
     static BOOL peerSynchronizeEvent(rdpInput* input, UINT32 flags);
     static BOOL peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
+    static BOOL peerRelMouseEvent(rdpInput* input, UINT16 flags, INT16 xDelta, INT16 yDelta);
     static BOOL peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
     static BOOL peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code);
     static BOOL peerUnicodeKeyboardEvent(rdpInput* input, UINT16 flags, UINT16 code);

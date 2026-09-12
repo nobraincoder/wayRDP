@@ -53,9 +53,6 @@ std::optional<EisPointerDevice::Region> EisPointerDevice::regionForMapping(const
             return *it;
         }
     }
-    if (!m_regions.isEmpty()) {
-        return m_regions.constBegin().value();
-    }
     return std::nullopt;
 }
 
@@ -98,8 +95,7 @@ EiConnection::~EiConnection()
     while (auto event = ei_get_event(m_ei)) {
         ei_event_unref(event);
     }
-    ei_unref(m_ei);
-    m_ei = nullptr;
+    m_ei = ei_unref(m_ei);
 }
 
 bool EiConnection::isValid() const
@@ -119,9 +115,9 @@ bool EiConnection::hasKeyboard() const
 
 EisPointerDevice *EiConnection::findPointerDeviceWithCapability(uint32_t capability)
 {
-    for (const auto &pointerDevice : m_pointerDevices) {
-        if (ei_device_has_capability(pointerDevice->device(), static_cast<ei_device_capability>(capability))) {
-            return pointerDevice.get();
+    for (auto it = m_pointerDevices.rbegin(); it != m_pointerDevices.rend(); ++it) {
+        if (ei_device_has_capability((*it)->device(), static_cast<ei_device_capability>(capability))) {
+            return it->get();
         }
     }
     return nullptr;
@@ -133,13 +129,34 @@ void EiConnection::sendPointerMotionAbsolute(double x, double y, const QSize &st
         return;
     }
 
-    auto pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_POINTER_ABSOLUTE);
+    if (!mappingId.isEmpty()) {
+        m_lastMappingId = mappingId;
+    }
+
+    EisPointerDevice *pointerDevice = nullptr;
+    std::optional<EisPointerDevice::Region> mappedRegion;
+
+    if (!mappingId.isEmpty()) {
+        for (auto it = m_pointerDevices.rbegin(); it != m_pointerDevices.rend(); ++it) {
+            auto r = (*it)->regionForMapping(mappingId);
+            if (r.has_value()) {
+                pointerDevice = it->get();
+                mappedRegion = r;
+                break;
+            }
+        }
+    }
+
+    if (!pointerDevice) {
+        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_POINTER_ABSOLUTE);
+    }
     if (!pointerDevice) {
         return;
     }
 
+    m_lastActivePointerDevice = pointerDevice;
+
     QPointF devicePosition;
-    const auto mappedRegion = pointerDevice->regionForMapping(mappingId);
     if (mappedRegion.has_value()) {
         const auto &region = *mappedRegion;
         double normX = x / streamSize.width();
@@ -158,7 +175,10 @@ void EiConnection::sendPointerButton(int button, uint state)
 {
     if (!m_ei) return;
 
-    auto pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_BUTTON);
+    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
+    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_BUTTON)) {
+        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_BUTTON);
+    }
     if (!pointerDevice) return;
 
     ei_device_button_button(pointerDevice->device(), static_cast<uint32_t>(button), state == 1);
@@ -169,7 +189,10 @@ void EiConnection::sendPointerAxis(double dx, double dy)
 {
     if (!m_ei) return;
 
-    auto pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
+    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
+    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_SCROLL)) {
+        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
+    }
     if (!pointerDevice) return;
 
     if (m_scrollStopTimer) {
@@ -186,7 +209,10 @@ void EiConnection::sendPointerAxisDiscrete(uint axis, int steps)
 {
     if (!m_ei) return;
 
-    auto pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
+    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
+    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_SCROLL)) {
+        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
+    }
     if (!pointerDevice) return;
 
     if (m_scrollStopTimer) {
@@ -205,7 +231,10 @@ void EiConnection::onScrollStopTimeout()
 {
     if (!m_ei || !m_isScrolling) return;
 
-    auto pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
+    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
+    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_SCROLL)) {
+        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
+    }
     if (pointerDevice) {
         ei_device_scroll_stop(pointerDevice->device(), true, true);
         ei_device_frame(pointerDevice->device(), ei_now(m_ei));
@@ -249,9 +278,8 @@ void EiConnection::processEisEvents()
             break;
         case EI_EVENT_SEAT_ADDED: {
             auto seat = ei_event_get_seat(event);
-            qInfo() << "EiConnection: Seat added, requesting devices...";
+            qInfo() << "EiConnection: Seat added, requesting unified remote device...";
             ei_seat_bind_capabilities(seat,
-                                      EI_DEVICE_CAP_POINTER,
                                       EI_DEVICE_CAP_POINTER_ABSOLUTE,
                                       EI_DEVICE_CAP_BUTTON,
                                       EI_DEVICE_CAP_SCROLL,
@@ -262,8 +290,6 @@ void EiConnection::processEisEvents()
                                                      EI_DEVICE_CAP_POINTER_ABSOLUTE,
                                                      EI_DEVICE_CAP_BUTTON,
                                                      EI_DEVICE_CAP_SCROLL,
-                                                     NULL);
-            ei_seat_request_device_with_capabilities(seat,
                                                      EI_DEVICE_CAP_KEYBOARD,
                                                      EI_DEVICE_CAP_TEXT,
                                                      NULL);
@@ -274,18 +300,37 @@ void EiConnection::processEisEvents()
             if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE)) {
                 m_pointerDevices.push_back(std::make_unique<EisPointerDevice>(device));
             }
-            if (!m_keyboardDevice && ei_device_has_capability(device, EI_DEVICE_CAP_KEYBOARD)) {
+            if (ei_device_has_capability(device, EI_DEVICE_CAP_KEYBOARD)) {
                 m_keyboardDevice = std::make_unique<EiDevice>(device);
             }
-            if (!m_textDevice && ei_device_has_capability(device, EI_DEVICE_CAP_TEXT)) {
+            if (ei_device_has_capability(device, EI_DEVICE_CAP_TEXT)) {
                 m_textDevice = std::make_unique<EiDevice>(device);
             }
             ei_device_start_emulating(device, ei_now(m_ei));
             emit connected();
             break;
+        case EI_EVENT_DEVICE_PAUSED:
+            qInfo() << "EiConnection: Device paused by EIS:" << (device ? ei_device_get_name(device) : "unknown");
+            if (device) {
+                ei_device_stop_emulating(device);
+            }
+            break;
+        case EI_EVENT_DEVICE_RESUMED:
+            qInfo() << "EiConnection: Device resumed by EIS:" << (device ? ei_device_get_name(device) : "unknown");
+            if (device) {
+                ei_device_start_emulating(device, ei_now(m_ei));
+            }
+            break;
         case EI_EVENT_DEVICE_REMOVED:
-            std::erase_if(m_pointerDevices, [device](const auto &p) {
-                return p->device() == device;
+            qInfo() << "EiConnection: Device removed by EIS:" << (device ? ei_device_get_name(device) : "unknown");
+            std::erase_if(m_pointerDevices, [device, this](const auto &p) {
+                if (p->device() == device) {
+                    if (m_lastActivePointerDevice == p.get()) {
+                        m_lastActivePointerDevice = nullptr;
+                    }
+                    return true;
+                }
+                return false;
             });
             if (m_keyboardDevice && m_keyboardDevice->device() == device) {
                 m_keyboardDevice.reset();
@@ -293,9 +338,6 @@ void EiConnection::processEisEvents()
             if (m_textDevice && m_textDevice->device() == device) {
                 m_textDevice.reset();
             }
-            break;
-        case EI_EVENT_DEVICE_RESUMED:
-            ei_device_start_emulating(device, ei_now(m_ei));
             break;
         default:
             break;

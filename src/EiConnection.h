@@ -81,6 +81,8 @@ private:
     std::unique_ptr<QSocketNotifier> m_eisNotifier;
     struct ei *m_ei{nullptr};
     std::vector<std::unique_ptr<EisPointerDevice>> m_pointerDevices;
+    EisPointerDevice *m_lastActivePointerDevice{nullptr};
+    QString m_lastMappingId;
     std::unique_ptr<EiDevice> m_keyboardDevice;
     std::unique_ptr<EiDevice> m_textDevice;
     QTimer *m_scrollStopTimer{nullptr};

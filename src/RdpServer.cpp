@@ -503,6 +503,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_HasExtendedMouseEvent, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_HasHorizontalWheel, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_UnicodeInput, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_HasRelativeMouseEvent, TRUE);
 
     // Load SSL certificate and private key
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -546,6 +547,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         peer->context->input->param1 = server;
         peer->context->input->SynchronizeEvent = peerSynchronizeEvent;
         peer->context->input->MouseEvent = peerMouseEvent;
+        peer->context->input->RelMouseEvent = peerRelMouseEvent;
         peer->context->input->ExtendedMouseEvent = peerExtendedMouseEvent;
         peer->context->input->KeyboardEvent = peerKeyboardEvent;
         peer->context->input->UnicodeKeyboardEvent = peerUnicodeKeyboardEvent;
@@ -797,7 +799,9 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     // Register Input Callbacks
     if (peer->context && peer->context->input) {
         peer->context->input->param1 = server;
+        peer->context->input->SynchronizeEvent = peerSynchronizeEvent;
         peer->context->input->MouseEvent = peerMouseEvent;
+        peer->context->input->RelMouseEvent = peerRelMouseEvent;
         peer->context->input->ExtendedMouseEvent = peerExtendedMouseEvent;
         peer->context->input->KeyboardEvent = peerKeyboardEvent;
         peer->context->input->UnicodeKeyboardEvent = peerUnicodeKeyboardEvent;
@@ -1083,7 +1087,8 @@ void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
 BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
 {
     Q_UNUSED(flags);
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     const auto stuck = server->m_pressedKeys;
@@ -1096,7 +1101,8 @@ BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
 
 BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1149,9 +1155,37 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
     return TRUE;
 }
 
+BOOL RdpServer::peerRelMouseEvent(rdpInput* input, UINT16 flags, INT16 xDelta, INT16 yDelta)
+{
+    Q_UNUSED(xDelta);
+    Q_UNUSED(yDelta);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
+    if (!server) return TRUE;
+
+    emit server->clientActivity();
+
+    if (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3)) {
+        if (flags & PTR_FLAGS_BUTTON1) {
+            uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
+            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_LEFT /* 272 */), state);
+        }
+        if (flags & PTR_FLAGS_BUTTON2) {
+            uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
+            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_RIGHT /* 273 */), state);
+        }
+        if (flags & PTR_FLAGS_BUTTON3) {
+            uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
+            emit server->pointerButton(BTN_MIDDLE /* 274 */, state);
+        }
+    }
+    return TRUE;
+}
+
 BOOL RdpServer::peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1173,7 +1207,8 @@ BOOL RdpServer::peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, 
 
 BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1198,7 +1233,8 @@ BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
 
 BOOL RdpServer::peerUnicodeKeyboardEvent(rdpInput* input, UINT16 flags, UINT16 code)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
