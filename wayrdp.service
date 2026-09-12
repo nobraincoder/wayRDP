@@ -1,0 +1,19 @@
+[Unit]
+Description=wayRDP Server
+Documentation=https://github.com/alok/wayrdp
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=QT_QPA_PLATFORM=wayland
+Environment=KPIPEWIRE_FORCE_ENCODER=h264_vaapi
+EnvironmentFile=-%h/.config/wayrdp.env
+ExecStart=%h/.local/bin/wayrdp
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=graphical-session.target
