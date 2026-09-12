@@ -201,11 +201,17 @@ RDP_LOCK_ON_DISCONNECT=1
 
 ## Known Limitations
 
-- **Single Virtual Display (`VIRTUAL-1`):** `wayrdp` currently provisions and manages a single isolated virtual monitor. Multi-monitor client setups (`/multimon`) are supported by projecting a single unified bounding canvas across all connected client displays rather than instantiating discrete separate virtual displays in KWin.
+- **Session Lifecycle & Cold-Boot (No SDDM / Login Screen Support):** `wayrdp` operates as an unprivileged user service (`systemctl --user`) attaching to an existing `kwin_wayland` session. It cannot initiate logins from a cold-boot SDDM display manager screen; the host user must already be logged in (or have auto-login enabled).
+- **Single Active Client Session:** Designed for personal workstation access. Supports one active client connection at a time (sequential reconnects); concurrent multi-seat or multi-tenant desktop sessions are not supported.
+- **Audio Output & Microphone Redirection (`[MS-RDPSND]`, `[MS-RDPEAI]`):** Remote audio playback and microphone capture redirection are currently in active development. Audio generated in the session plays on the host machine's physical audio devices.
+- **Drive Redirection (`[MS-RDPEFS]`):** Mounting client local drives or folders as virtual drives inside Dolphin is not yet implemented; file transfers are handled via bidirectional clipboard copy/paste.
+- **Multi-Monitor Canvas Model:** Multi-monitor client setups (`/multimon`) project a single unified bounding canvas across displays rather than instantiating discrete separate virtual displays in KWin.
+- **Touch & Stylus Gestures:** Touch and pen inputs map to standard absolute mouse pointer events; native multi-touch gestures (pinch-to-zoom) and pen pressure/tilt sensitivity are not forwarded.
+- **Network Transport (TCP Only):** `wayrdp` communicates exclusively over TCP; high-loss UDP transport (`[MS-RDPEUDP]`) is not implemented.
+- **Video Pipeline Limits:** Streams strictly in 8-bit SDR H.264 (`AVC420`) capped at 60 FPS. HDR10, wide color gamuts (10-bit), and 120+ Hz refresh rates are not supported.
 - **H.264 Protocol Constraint:** Microsoft RDP specifications ([MS-RDPEGFX]) strictly require H.264 (`AVC420` / `AVC444`) for official client applications (Windows `mstsc.exe`, macOS Microsoft Remote Desktop, iOS/Android apps). Neither HEVC (H.265) nor AV1 are supported by official Microsoft RDP clients.
 - **TLS Authentication (Non-NLA):** FreeRDP on Linux uses standard TLS encryption with PAM validation rather than Windows CredSSP/NLA. When connecting from Windows `mstsc.exe`, the `/prompt` switch or credentials saved via `cmdkey` must be used so Windows presents the credential entry dialog.
 - **Desktop Environment & Compositor Requirement:** Engineered exclusively for KDE Plasma 6 running on Wayland (`kwin_wayland`) using `xdg-desktop-portal-kde` and `libei`. X11 sessions, GNOME Mutter, and generic wlroots compositors are not supported.
-- **Audio Output Redirection (`[MS-RDPSND]`):** Remote audio streaming is currently not working and remains in active development. Audio generated inside the remote desktop session plays through the host machine's local speakers rather than redirecting to the client.
 - **Hardware Encoder Throughput at 4K / Retina on Older Silicon:** At 4K or high-DPI Retina (2x scaling) resolutions, video stream throughput is limited by the host GPU's hardware video encoder (VPU). Older integrated GPUs (e.g., Intel Gen 9 Skylake / HD Graphics 520) may cap throughput around 25–35 FPS under 4K workloads due to fixed-function silicon limits, whereas 1080p and 1440p run at a continuous 60 FPS.
 
 ---
