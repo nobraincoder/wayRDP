@@ -1,4 +1,4 @@
-#include "RdpGfxChannel.h"
+#include "channels/RdpGfxChannel.h"
 #include <QDebug>
 #include <QDateTime>
 #include <winpr/wtsapi.h>

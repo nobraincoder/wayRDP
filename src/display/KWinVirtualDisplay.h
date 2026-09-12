@@ -11,7 +11,7 @@
 #include <QTimer>
 #include <chrono>
 
-#include "IVirtualDisplayBackend.h"
+#include "display/IVirtualDisplayBackend.h"
 
 struct PortalStream {
     uint32_t id;

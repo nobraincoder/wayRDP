@@ -27,8 +27,8 @@
 #include <QFile>
 #include <QStringList>
 #include <winpr/shell.h>
-#include "SystemInputSettings.h"
-#include "RdpGfxChannel.h"
+#include "core/SystemInputSettings.h"
+#include "channels/RdpGfxChannel.h"
 
 struct MyPeerContext {
     rdpContext common;

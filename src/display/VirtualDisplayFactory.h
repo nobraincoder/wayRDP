@@ -3,8 +3,8 @@
 #include <memory>
 #include <QObject>
 #include <QString>
-#include "IVirtualDisplayBackend.h"
-#include "KWinVirtualDisplay.h"
+#include "display/IVirtualDisplayBackend.h"
+#include "display/KWinVirtualDisplay.h"
 
 class VirtualDisplayFactory
 {

@@ -1,4 +1,4 @@
-#include "SystemInputSettings.h"
+#include "core/SystemInputSettings.h"
 
 #include <QDir>
 #include <QFile>

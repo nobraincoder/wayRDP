@@ -13,11 +13,11 @@
 #include <sys/socket.h>
 #include <QSocketNotifier>
 #include <openssl/provider.h>
-#include "RdpServer.h"
-#include "IVirtualDisplayBackend.h"
-#include "VirtualDisplayFactory.h"
-#include "PipeWireStreamController.h"
-#include "SessionLifecycleController.h"
+#include "core/RdpServer.h"
+#include "display/IVirtualDisplayBackend.h"
+#include "display/VirtualDisplayFactory.h"
+#include "video/PipeWireStreamController.h"
+#include "session/SessionLifecycleController.h"
 
 static int sigFd[2];
 

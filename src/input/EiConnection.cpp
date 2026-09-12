@@ -1,4 +1,4 @@
-#include "EiConnection.h"
+#include "input/EiConnection.h"
 
 #include <QDebug>
 #include <QScopeGuard>
