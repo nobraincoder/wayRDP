@@ -6,6 +6,10 @@ Unlike standard RDP implementations that simply mirror physical monitors, `wayrd
 
 ---
 
+[Features](#key-features) • [Prerequisites & Install](#system-requirements) • [Configuration](#configuration-reference) • [Client Setup](#connecting-from-clients) • [Troubleshooting](#troubleshooting--faq) • [Known Limitations](#known-limitations)
+
+---
+
 ## Key Features
 
 - **Hardware-Accelerated Zero-Latency Video (VA-API / H.264):**
@@ -41,82 +45,44 @@ Unlike standard RDP implementations that simply mirror physical monitors, `wayrd
 
 ## System Requirements
 
-### Platform Prerequisites
 - **Operating System:** Linux with systemd
 - **Desktop Environment:** KDE Plasma 6.x running on Wayland (`kwin_wayland`)
-- **Core Services:**
-  - `pipewire` and `wireplumber`
-  - `xdg-desktop-portal` and `xdg-desktop-portal-kde`
-  - `libkscreen` (`kscreen-doctor`)
-- **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon via Mesa VA-API, or NVIDIA via VA-API driver wrapper).
+- **Core Services:** `pipewire`, `wireplumber`, `xdg-desktop-portal`, `xdg-desktop-portal-kde`, `kscreen-doctor`
+- **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon Mesa, or NVIDIA VA-API wrapper)
 
-### Distribution Packages
+<details>
+<summary><b>📦 Distribution Packages (Arch / Fedora / Ubuntu)</b></summary>
 
 #### 1. Arch Linux / EndeavourOS / Manjaro
 ```bash
 sudo pacman -S --needed \
-    base-devel \
-    cmake \
-    extra-cmake-modules \
-    pkgconf \
-    qt6-base \
-    qt6-multimedia \
-    kguiaddons \
-    kpipewire \
-    freerdp \
-    libxkbcommon \
-    libei \
-    pam \
-    openssl \
-    libpulse \
-    libkscreen \
-    libva \
-    libva-utils
+    base-devel cmake extra-cmake-modules pkgconf \
+    qt6-base qt6-multimedia kguiaddons kpipewire \
+    freerdp libxkbcommon libei pam openssl \
+    libpulse libkscreen libva libva-utils
 ```
 
 #### 2. Fedora 40 / 41+
 ```bash
 sudo dnf install \
-    cmake \
-    extra-cmake-modules \
-    gcc-c++ \
-    pkgconfig \
-    qt6-qtbase-devel \
-    qt6-qtmultimedia-devel \
-    kf6-kguiaddons-devel \
-    kpipewire-devel \
-    freerdp-devel \
-    libxkbcommon-devel \
-    libei-devel \
-    pam-devel \
-    openssl-devel \
-    pulseaudio-libs-devel \
-    libkscreen-devel \
-    libva-devel
+    cmake extra-cmake-modules gcc-c++ pkgconfig \
+    qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel \
+    kpipewire-devel freerdp-devel libxkbcommon-devel \
+    libei-devel pam-devel openssl-devel pulseaudio-libs-devel \
+    libkscreen-devel libva-devel
 ```
 
 #### 3. Ubuntu 24.10+ / Debian Trixie (Plasma 6 & Qt6)
 ```bash
 sudo apt-get install \
-    build-essential \
-    cmake \
-    extra-cmake-modules \
-    pkg-config \
-    qt6-base-dev \
-    qt6-multimedia-dev \
-    libkf6guiaddons-dev \
-    libkpipewire-dev \
-    libfreerdp-server3-dev \
-    libfreerdp3-dev \
-    libwinpr3-dev \
-    libxkbcommon-dev \
-    libei-dev \
-    libpam0g-dev \
-    libssl-dev \
-    libpulse-dev \
-    libkscreen-dev \
-    va-driver-all
+    build-essential cmake extra-cmake-modules pkg-config \
+    qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev \
+    libkpipewire-dev libfreerdp-server3-dev libfreerdp3-dev \
+    libwinpr3-dev libxkbcommon-dev libei-dev libpam0g-dev \
+    libssl-dev libpulse-dev libkscreen-dev va-driver-all
 ```
+
+</details>
 
 ---
 
@@ -125,24 +91,15 @@ sudo apt-get install \
 Run the automated installer script from the repository directory:
 
 ```bash
-git clone https://github.com/your-repo/wayrdp.git
-cd wayrdp
+git clone https://github.com/nobraincoder/wayRDP.git
+cd wayRDP
 ./install.sh
 ```
 
-The script will:
-1. Validate required build tools and libraries.
-2. Build the project using Release optimizations.
-3. Install the executable to `~/.local/bin/wayrdp`.
-4. Install the systemd user service unit to `~/.config/systemd/user/wayrdp.service`.
-5. Create a default configuration at `~/.config/wayrdp.env`.
-6. Reload the user systemd daemon.
+The script automatically checks dependencies, compiles with Release optimizations, installs to `~/.local/bin/wayrdp`, configures `~/.config/systemd/user/wayrdp.service`, creates `~/.config/wayrdp.env`, and reloads systemd.
 
----
-
-## Manual Build & Installation
-
-If you prefer building manually with CMake:
+<details>
+<summary><b>🛠️ Manual Build & Installation (CMake)</b></summary>
 
 ```bash
 mkdir -p build && cd build
@@ -163,6 +120,8 @@ chmod 600 ~/.config/wayrdp.env
 # Reload systemd
 systemctl --user daemon-reload
 ```
+
+</details>
 
 ---
 
@@ -298,25 +257,46 @@ xfreerdp /v:<HOST_IP>:3390 /u:<USER> /p:<PASSWORD> /gfx:AVC420 /network:auto /cl
 
 ## Troubleshooting & FAQ
 
-### Port 3389 vs Port 3390
-If official KDE Remote Desktop (`krdpserver`) is enabled in KDE System Settings, it binds to port `3389`. `wayrdp` defaults to port `3390` so both services can coexist without port collision.
+<details>
+<summary><b>1. Port 3389 vs Port 3390 (Coexisting with official KRdp)</b></summary>
 
-### VA-API Hardware Encoding Issues & Fixes
+If official KDE Remote Desktop (`krdpserver`) is enabled in KDE System Settings, it binds to port `3389`. `wayrdp` defaults to port `3390` so both services can coexist simultaneously without port collision.
 
-If hardware encoding fails, falls back to CPU software encoding, or exhibits visual glitches, check the following known issues:
+</details>
 
-#### 1. Buffer Starvation (`Failed receiving filtered frame: Cannot allocate memory`)
+<details>
+<summary><b>2. Virtual Display Does Not Appear (Portal Check)</b></summary>
+
+Ensure `xdg-desktop-portal-kde` is running in your active session:
+```bash
+ps aux | grep xdg-desktop-portal-kde
+```
+Also verify that `kwin_wayland` is your active compositor (`echo $XDG_SESSION_TYPE` should return `wayland`).
+
+</details>
+
+<details>
+<summary><b>3. Buffer Starvation (Failed receiving filtered frame: Cannot allocate memory)</b></summary>
+
 - **Symptom:** During rapid client window resizing or bursty 60 FPS motion, the server log displays `Failed receiving filtered frame: Cannot allocate memory` and the video stream freezes or drops frames.
 - **Root Cause:** When `maxPendingFrames` is configured too low (e.g. $\le 4$), VA-API's internal GPU surface pool is exhausted during dynamic resolution changes before the client acknowledges preceding frames.
 - **Fix:** `wayrdp` allocates a bounded queue of **25 pending frames** (`m_stream->setMaxPendingFrames(25)`). This guarantees sufficient buffer headroom for the hardware encoder pipeline without introducing measurable latency.
 
-#### 2. Trailing Ghost Windows / Lagging Fade-out Animations
+</details>
+
+<details>
+<summary><b>4. Trailing Ghost Windows / Lagging Fade-out Animations</b></summary>
+
 - **Symptom:** When a window is closed or an animation fades out, a ghost image of the window lingers on the client screen until the mouse is moved or a key is pressed.
 - **Root Cause:** By default in KPipeWire, non-speed encoding modes configure VA-API with `async_depth = 2`. Because Wayland PipeWire capture only generates frames upon screen damage, the final clean frame rendered by KWin gets trapped inside the GPU's internal asynchronous buffer queue waiting for a subsequent frame to push it out.
 - **Fix:** Always ensure `RDP_ENCODER_PREFERENCE=speed` (default in `wayrdp`). This configures `async_depth = 1` in `h264vaapiencoder` and `-tune zerolatency` in software encoders, flushing every completed frame to the network immediately.
 
-#### 3. DRM Render Node Permissions (`/dev/dri/renderD128`)
-- **Symptom:** `kpipewire_vaapi_logging: Failed to initialize VA-API display` or falling back to CPU encoding.
+</details>
+
+<details>
+<summary><b>5. DRM Render Node Permissions (/dev/dri/renderD128)</b></summary>
+
+- **Symptom:** `kpipewire_vaapi_logging: Failed to initialize VA-API display` or falling back to CPU software encoding.
 - **Root Cause:** The unprivileged user session lacks read/write permissions to the DRM render node.
 - **Verification & Fix:**
   ```bash
@@ -329,7 +309,11 @@ If hardware encoding fails, falls back to CPU software encoding, or exhibits vis
   ```
   Log out and log back in for group membership to take effect.
 
-#### 4. Intel Driver Selection (`intel-media-driver` vs `i965`)
+</details>
+
+<details>
+<summary><b>6. Intel Driver Selection (intel-media-driver vs i965)</b></summary>
+
 - **Symptom:** `vainfo` reports driver errors or H.264 encode entrypoints (`VAEntrypointEncSlice`) are missing.
 - **Root Cause:** On modern Intel GPUs (Broadwell / Skylake / Gen 8+ and newer), the older legacy driver `libva-intel-driver` (`i965`) lacks support for Wayland DMA-BUF modifiers.
 - **Fix:** Install `intel-media-driver` (`iHD`):
@@ -342,18 +326,15 @@ If hardware encoding fails, falls back to CPU software encoding, or exhibits vis
   ```
   Ensure `VAProfileH264Main : VAEntrypointEncSlice` or `VAProfileH264ConstrainedBaseline : VAEntrypointEncSlice` appears in the list.
 
-#### 5. Forcing the Hardware VA-API Encoder
-- If KPipeWire's automatic encoder negotiation selects software `x264` instead of GPU acceleration, verify that `wayrdp.service` contains:
-  ```ini
-  Environment=KPIPEWIRE_FORCE_ENCODER=h264_vaapi
-  ```
-  This is included by default in the provided `wayrdp.service` unit.
+</details>
 
----
+<details>
+<summary><b>7. Forcing the Hardware VA-API Encoder (KPIPEWIRE_FORCE_ENCODER)</b></summary>
 
-### Virtual Display Does Not Appear
-Ensure `xdg-desktop-portal-kde` is running in your session:
-```bash
-ps aux | grep xdg-desktop-portal-kde
+If KPipeWire's automatic encoder negotiation selects software `x264` instead of GPU acceleration, verify that `wayrdp.service` contains:
+```ini
+Environment=KPIPEWIRE_FORCE_ENCODER=h264_vaapi
 ```
-Also verify that `kwin_wayland` is your active compositor (`echo $XDG_SESSION_TYPE` should return `wayland`).
+This is included by default in the provided `wayrdp.service` unit.
+
+</details>
