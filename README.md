@@ -205,6 +205,7 @@ RDP_LOCK_ON_DISCONNECT=1
 - **H.264 Protocol Constraint:** Microsoft RDP specifications ([MS-RDPEGFX]) strictly require H.264 (`AVC420` / `AVC444`) for official client applications (Windows `mstsc.exe`, macOS Microsoft Remote Desktop, iOS/Android apps). Neither HEVC (H.265) nor AV1 are supported by official Microsoft RDP clients.
 - **TLS Authentication (Non-NLA):** FreeRDP on Linux uses standard TLS encryption with PAM validation rather than Windows CredSSP/NLA. When connecting from Windows `mstsc.exe`, the `/prompt` switch or credentials saved via `cmdkey` must be used so Windows presents the credential entry dialog.
 - **Desktop Environment & Compositor Requirement:** Engineered exclusively for KDE Plasma 6 running on Wayland (`kwin_wayland`) using `xdg-desktop-portal-kde` and `libei`. X11 sessions, GNOME Mutter, and generic wlroots compositors are not supported.
+- **Audio Output Redirection (`[MS-RDPSND]`):** Remote audio streaming is currently not working and remains in active development. Audio generated inside the remote desktop session plays through the host machine's local speakers rather than redirecting to the client.
 - **Hardware Encoder Throughput at 4K / Retina on Older Silicon:** At 4K or high-DPI Retina (2x scaling) resolutions, video stream throughput is limited by the host GPU's hardware video encoder (VPU). Older integrated GPUs (e.g., Intel Gen 9 Skylake / HD Graphics 520) may cap throughput around 25–35 FPS under 4K workloads due to fixed-function silicon limits, whereas 1080p and 1440p run at a continuous 60 FPS.
 
 ---
