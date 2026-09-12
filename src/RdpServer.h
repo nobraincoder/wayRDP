@@ -28,6 +28,7 @@
 #include <QStringList>
 #include <winpr/shell.h>
 #include "SystemInputSettings.h"
+#include "RdpGfxChannel.h"
 
 struct MyPeerContext {
     rdpContext common;
@@ -113,11 +114,6 @@ private:
 
     static void rdpsnd_activated(RdpsndServerContext* context);
 
-    static BOOL my_rdpgfx_channel_id_assigned(RdpgfxServerContext* context, UINT32 channelId);
-    static UINT my_rdpgfx_caps_advertise(RdpgfxServerContext* context, const RDPGFX_CAPS_ADVERTISE_PDU* capsAdvertise);
-    static UINT my_rdpgfx_frame_acknowledge(RdpgfxServerContext* context, const RDPGFX_FRAME_ACKNOWLEDGE_PDU* frameAcknowledge);
-    static UINT my_rdpgfx_qoe_frame_acknowledge(RdpgfxServerContext* context, const RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU* qoeFrameAcknowledge);
-
     void generateCertificate();
 
     freerdp_listener* m_listener;
@@ -125,21 +121,15 @@ private:
     bool m_running;
 
 public:
-    RdpgfxServerContext* m_gfxContext;
+    RdpGfxChannel m_gfxChannel;
     CliprdrServerContext* m_cliprdrContext;
     RdpsndServerContext* m_rdpsndContext;
     freerdp_peer* m_activePeer;
-    QMutex m_gfxMutex;
+    QMutex m_peerMutex;
     QMutex m_audioMutex;
     QMutex m_cliprdrMutex;
-    UINT32 m_frameId;
     UINT16 m_audioTimestamp;
     std::atomic<bool> m_audioReady{false};
-    std::atomic<bool> m_gfxOpened{false};
-    std::atomic<bool> m_gfxReady{false};
-    std::atomic<bool> m_outputSuppressed{false};
-    std::atomic<bool> m_waitingForKeyFrame{false};
-    std::atomic<int> m_droppedFramesWaitingForKey{0};
     std::atomic<bool> m_cliprdrReady{false};
     std::atomic<uint32_t> m_audioSampleRate{48000};
     std::atomic<uint64_t> m_audioFramesSent{0};
@@ -180,34 +170,12 @@ public:
         QImage image;
         std::chrono::steady_clock::time_point lastUsed;
     };
-    UINT32 m_surfaceWidth{0};
-    UINT32 m_surfaceHeight{0};
-    UINT16 m_surfaceId{0};
-    bool m_hasActiveSurface{false};
     QSet<quint32> m_pressedKeys;
     QHash<uint32_t, CursorCacheEntry> m_cursorCache;
     CursorCacheEntry* m_lastUsedCursor{nullptr};
     double m_scrollAccumulatorX{0.0};
     double m_scrollAccumulatorY{0.0};
     SystemInputSettings m_inputSettings;
-
-    struct QueuedVideoFrame {
-        QByteArray data;
-        bool isKeyFrame{false};
-    };
-    std::deque<QueuedVideoFrame> m_frameQueue;
-    std::mutex m_frameQueueMutex;
-    std::condition_variable m_frameQueueCond;
-    QSet<uint32_t> m_pendingFrames;
-    std::deque<std::pair<uint32_t, std::chrono::steady_clock::time_point>> m_pendingFrameTimestamps;
-    std::mutex m_pendingFramesMutex;
-    std::atomic<bool> m_submissionRunning{false};
-    std::thread m_submissionThread;
-
-    void startSubmissionThread();
-    void stopSubmissionThread();
-    void submitFrameToGfx(const QueuedVideoFrame& frame);
-    bool hasInFlightCapacity();
 };
 
 #endif // RDPSERVER_H
