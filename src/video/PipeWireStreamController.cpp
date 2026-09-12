@@ -1,4 +1,4 @@
-#include "PipeWireStreamController.h"
+#include "video/PipeWireStreamController.h"
 #include <QDebug>
 
 PipeWireStreamController::PipeWireStreamController(QObject *parent)

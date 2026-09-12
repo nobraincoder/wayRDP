@@ -26,21 +26,22 @@ find_path(KF6GUIADDONS_INCLUDE_DIR NAMES KColorUtils PATH_SUFFIXES KF6/KGuiAddon
 
 # Add source files
 set(SOURCES
-    src/main.cpp
-    src/RdpServer.cpp
-    src/RdpGfxChannel.cpp
-    src/KWinVirtualDisplay.cpp
-    src/PipeWireStreamController.cpp
-    src/QtAudioController.cpp
-    src/EiConnection.cpp
-    src/SystemInputSettings.cpp
-    src/SessionLifecycleController.cpp
-    src/IVirtualDisplayBackend.cpp
+    src/core/main.cpp
+    src/core/RdpServer.cpp
+    src/core/SystemInputSettings.cpp
+    src/channels/RdpGfxChannel.cpp
+    src/display/IVirtualDisplayBackend.cpp
+    src/display/KWinVirtualDisplay.cpp
+    src/input/EiConnection.cpp
+    src/video/PipeWireStreamController.cpp
+    src/audio/QtAudioController.cpp
+    src/session/SessionLifecycleController.cpp
 )
 
 add_executable(wayrdp ${SOURCES})
 
 target_include_directories(wayrdp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${KPIPEWIRE_INCLUDE_DIR}
     ${KF6GUIADDONS_INCLUDE_DIR}
     ${PIPEWIRE_INCLUDE_DIRS}

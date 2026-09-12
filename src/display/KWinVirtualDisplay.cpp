@@ -1,5 +1,5 @@
-#include "KWinVirtualDisplay.h"
-#include "EiConnection.h"
+#include "display/KWinVirtualDisplay.h"
+#include "input/EiConnection.h"
 #include <cmath>
 #include <QDebug>
 #include <QDBusConnection>

@@ -1,4 +1,4 @@
-#include "QtAudioController.h"
+#include "audio/QtAudioController.h"
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <QDebug>

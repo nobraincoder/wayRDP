@@ -1,4 +1,4 @@
-#include "SessionLifecycleController.h"
+#include "session/SessionLifecycleController.h"
 #include <QProcess>
 
 SessionLifecycleController::SessionLifecycleController(QObject *parent)
