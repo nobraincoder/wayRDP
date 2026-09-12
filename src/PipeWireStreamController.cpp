@@ -214,7 +214,7 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
 
     m_fpsFrameCount++;
     qint64 elapsed = m_fpsTimer.elapsed();
-    if (elapsed - m_lastFpsLogTime >= 2000) {
+    if (elapsed - m_lastFpsLogTime >= 10000) {
         double fps = (m_fpsFrameCount * 1000.0) / (elapsed - m_lastFpsLogTime);
         qInfo().noquote() << QString("PipeWireStreamController: Video stream running at %1 FPS | packet: %2 KB | keyframe: %3")
                                 .arg(fps, 0, 'f', 1)

@@ -1298,8 +1298,14 @@ void RdpServer::sendVideoFrame(const QByteArray &data, bool isKeyFrame)
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
         if (isKeyFrame) {
             m_frameQueue.clear();
+        } else if (m_frameQueue.size() > 8) {
+            // If the queue exceeds 8 frames (~130ms of video backlog), the client is congested.
+            // Flush queue and request an immediate IDR keyframe to prevent memory bloat and latency buildup.
+            m_frameQueue.clear();
+            m_waitingForKeyFrame = true;
+            m_droppedFramesWaitingForKey = 0;
+            return;
         }
-        // In H.264, never pop_front() intermediate P-frames as it corrupts subsequent frames!
         m_frameQueue.push_back({data, isKeyFrame});
     }
     m_frameQueueCond.notify_one();
@@ -2073,6 +2079,9 @@ void RdpServer::startNextIncomingFile(CliprdrServerContext* context)
     if (!m_completedIncomingFilePaths.isEmpty()) {
         qInfo() << "CLIPRDR: All incoming files received (" << m_completedIncomingFilePaths.size() << "files):" << m_completedIncomingFilePaths;
         emit clientFilesReceived(m_completedIncomingFilePaths);
+        // Free memory and temporary structures now that transmission is finished
+        m_incomingFiles.clear();
+        m_completedIncomingFilePaths.clear();
     }
 }
 
