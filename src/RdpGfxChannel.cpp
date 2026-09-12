@@ -17,6 +17,14 @@ RdpGfxChannel::~RdpGfxChannel()
 
 bool RdpGfxChannel::initialize(HANDLE vcm, rdpContext* rdpcontext)
 {
+    {
+        QMutexLocker locker(&m_mutex);
+        if (m_context && m_context->rdpcontext == rdpcontext && m_gfxReady) {
+            qInfo() << "RdpGfxChannel: Already initialized and ready for this peer context, skipping.";
+            return true;
+        }
+    }
+
     close();
 
     if (!vcm) {
@@ -87,6 +95,8 @@ void RdpGfxChannel::close()
         m_gfxReady = false;
         m_surfaceId = 0;
         m_hasActiveSurface = false;
+        m_surfaceWidth = 0;
+        m_surfaceHeight = 0;
     }
 
     {

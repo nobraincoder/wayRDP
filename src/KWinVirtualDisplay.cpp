@@ -757,6 +757,10 @@ void KWinVirtualDisplay::destroyDisplay()
 void KWinVirtualDisplay::onClientConnected(const QSize &resolution, double scale)
 {
     qInfo() << "KWinVirtualDisplay: RDP Client connected with resolution:" << resolution << "scale:" << scale;
+    if (m_displayActive && m_requestedSize == resolution && qFuzzyCompare(m_requestedScale, scale)) {
+        qInfo() << "KWinVirtualDisplay: Virtual display session is already active with matching resolution/scale, keeping existing session.";
+        return;
+    }
     createDisplay("VIRTUAL-1", resolution, scale);
 }
 

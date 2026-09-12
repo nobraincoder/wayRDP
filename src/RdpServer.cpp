@@ -729,6 +729,11 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
 {
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(peer->context);
     RdpServer* server = ctx->server;
+
+    if (ctx->activated) {
+        qInfo() << "peerActivate: Peer already activated, skipping re-initialization.";
+        return TRUE;
+    }
     
     qInfo() << "Client activation capability exchange completed. Initializing Graphics Pipeline (RDPGFX)...";
     
