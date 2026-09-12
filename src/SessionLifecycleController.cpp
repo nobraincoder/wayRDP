@@ -1,12 +1,18 @@
 #include "SessionLifecycleController.h"
+#include <QProcess>
 
 SessionLifecycleController::SessionLifecycleController(QObject *parent)
     : QObject(parent)
 {
-    // Auto-lock on disconnect is configurable via RDP_LOCK_ON_DISCONNECT
-    // Enabled by default if set to "1" or "true"
-    m_lockOnDisconnect = (qEnvironmentVariable("RDP_LOCK_ON_DISCONNECT") == "1" ||
-                          qEnvironmentVariable("RDP_LOCK_ON_DISCONNECT").compare("true", Qt::CaseInsensitive) == 0);
+    // Auto-lock on disconnect: Enabled by default for security, can be disabled via RDP_LOCK_ON_DISCONNECT=0/false
+    QString envLock = qEnvironmentVariable("RDP_LOCK_ON_DISCONNECT").trimmed().toLower();
+    if (envLock == "0" || envLock == "false" || envLock == "no" || envLock == "off") {
+        m_lockOnDisconnect = false;
+        qInfo() << "SessionLifecycleController: Lock on disconnect disabled via RDP_LOCK_ON_DISCONNECT";
+    } else {
+        m_lockOnDisconnect = true;
+        qInfo() << "SessionLifecycleController: Lock on disconnect enabled by default";
+    }
 }
 
 SessionLifecycleController::~SessionLifecycleController()
@@ -74,6 +80,8 @@ void SessionLifecycleController::releaseSleepInhibit()
 void SessionLifecycleController::lockScreen()
 {
     qInfo() << "SessionLifecycleController: Locking session following RDP client disconnection...";
+    bool locked = false;
+
     QDBusInterface screenSaver("org.freedesktop.ScreenSaver",
                                "/ScreenSaver",
                                "org.freedesktop.ScreenSaver",
@@ -83,10 +91,16 @@ void SessionLifecycleController::lockScreen()
         QDBusReply<void> reply = screenSaver.call("Lock");
         if (reply.isValid()) {
             qInfo() << "SessionLifecycleController: Session locked successfully via KScreenLocker";
+            locked = true;
         } else {
-            qWarning() << "SessionLifecycleController: Failed to lock screen:" << reply.error().message();
+            qWarning() << "SessionLifecycleController: Failed to lock screen via DBus:" << reply.error().message();
         }
     } else {
         qWarning() << "SessionLifecycleController: ScreenSaver D-Bus interface not found";
+    }
+
+    if (!locked) {
+        qInfo() << "SessionLifecycleController: Invoking loginctl lock-session fallback...";
+        QProcess::startDetached("loginctl", QStringList() << "lock-session");
     }
 }

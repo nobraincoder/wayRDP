@@ -60,14 +60,20 @@ static int pamConversation(int num_msg, const struct pam_message** msg,
 
 RdpServer::RdpServer(QObject *parent)
     : QObject(parent), m_listener(nullptr), m_listenerThread(nullptr), m_running(false),
-      m_gfxContext(nullptr), m_cliprdrContext(nullptr), m_rdpsndContext(nullptr),
-      m_activePeer(nullptr), m_frameId(0), m_audioTimestamp(0), m_audioReady(false),
-      m_gfxOpened(false), m_gfxReady(false)
+      m_cliprdrContext(nullptr), m_rdpsndContext(nullptr),
+      m_activePeer(nullptr), m_audioTimestamp(0), m_audioReady(false)
 {
     WTSRegisterWtsApiFunctionTable(FreeRDP_InitWtsApi());
     m_networkAdaptTimer = new QTimer(this);
     m_networkAdaptTimer->setInterval(1500);
     connect(m_networkAdaptTimer, &QTimer::timeout, this, &RdpServer::checkNetworkAdaptation);
+
+    connect(&m_gfxChannel, &RdpGfxChannel::frameAcknowledged, this, [this](uint32_t frameId, int64_t rttMs) {
+        m_lastAckedFrameId = frameId;
+        if (rttMs > 0) {
+            m_lastRttMs = rttMs;
+        }
+    });
 }
 
 RdpServer::~RdpServer()
@@ -200,7 +206,6 @@ bool RdpServer::start(int port)
         }
     }
 
-    startSubmissionThread();
     m_running = true;
     m_listenerThread = CreateThread(nullptr, 0, listenerThread, this, 0, nullptr);
     
@@ -216,16 +221,9 @@ void RdpServer::stop()
         m_networkAdaptTimer->stop();
     }
 
-    stopSubmissionThread();
     m_running = false;
-    
-    {
-        QMutexLocker locker(&m_gfxMutex);
-        m_activePeer = nullptr;
-        m_gfxContext = nullptr;
-        m_gfxOpened = false;
-        m_gfxReady = false;
-    }
+    m_gfxChannel.close();
+    m_activePeer = nullptr;
     {
         QMutexLocker locker(&m_cliprdrMutex);
         m_cliprdrContext = nullptr;
@@ -289,7 +287,7 @@ BOOL RdpServer::peerAccepted(freerdp_listener* listener, freerdp_peer* peer)
     RdpServer* server = static_cast<RdpServer*>(listener->info);
     
     {
-        QMutexLocker locker(&server->m_gfxMutex);
+        QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer != nullptr) {
             qInfo() << "Disconnecting previous/stale RDP session to accept new connection from" << peer->hostname;
             freerdp_peer* oldPeer = server->m_activePeer;
@@ -307,7 +305,7 @@ BOOL RdpServer::peerAccepted(freerdp_listener* listener, freerdp_peer* peer)
     
     if (!freerdp_peer_context_new(peer)) {
         qWarning() << "Failed to create context for accepted peer";
-        QMutexLocker locker(&server->m_gfxMutex);
+        QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer == peer) {
             server->m_activePeer = nullptr;
         }
@@ -323,7 +321,7 @@ BOOL RdpServer::peerAccepted(freerdp_listener* listener, freerdp_peer* peer)
     if (!ctx->thread) {
         qWarning() << "Failed to create thread for peer handling";
         freerdp_peer_context_free(peer);
-        QMutexLocker locker(&server->m_gfxMutex);
+        QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer == peer) {
             server->m_activePeer = nullptr;
         }
@@ -505,6 +503,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_HasExtendedMouseEvent, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_HasHorizontalWheel, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_UnicodeInput, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_HasRelativeMouseEvent, TRUE);
 
     // Load SSL certificate and private key
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -548,6 +547,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         peer->context->input->param1 = server;
         peer->context->input->SynchronizeEvent = peerSynchronizeEvent;
         peer->context->input->MouseEvent = peerMouseEvent;
+        peer->context->input->RelMouseEvent = peerRelMouseEvent;
         peer->context->input->ExtendedMouseEvent = peerExtendedMouseEvent;
         peer->context->input->KeyboardEvent = peerKeyboardEvent;
         peer->context->input->UnicodeKeyboardEvent = peerUnicodeKeyboardEvent;
@@ -611,20 +611,11 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
                 }
             }
 
-            if (ctx->vcm && (!server->m_gfxOpened || !ctx->dispOpened)) {
+            if (ctx->vcm && (!server->m_gfxChannel.isOpened() || !ctx->dispOpened)) {
                 if (WTSVirtualChannelManagerIsChannelJoined(ctx->vcm, "drdynvc")) {
                     UINT32 dvcState = WTSVirtualChannelManagerGetDrdynvcState(ctx->vcm);
                     if (dvcState == DRDYNVC_STATE_READY) {
-                        QMutexLocker locker(&server->m_gfxMutex);
-                        if (server->m_gfxContext && !server->m_gfxOpened) {
-                            qInfo() << "drdynvc is READY, calling gfx->Open()...";
-                            if (server->m_gfxContext->Open(server->m_gfxContext)) {
-                                server->m_gfxOpened = true;
-                                qInfo() << "RDPGFX dynamic virtual channel opened successfully!";
-                            } else {
-                                qWarning() << "Failed to open RDPGFX dynamic virtual channel!";
-                            }
-                        }
+                        server->m_gfxChannel.markOpened();
                         setup_and_open_disp(ctx, server);
                     }
                 }
@@ -643,30 +634,10 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         ctx->disp = nullptr;
     }
     
-    {
-        QMutexLocker locker(&server->m_gfxMutex);
-        if (server->m_activePeer == peer) {
-            server->m_activePeer = nullptr;
-            if (server->m_gfxContext && server->m_gfxOpened) {
-                server->m_gfxContext->Close(server->m_gfxContext);
-            }
-            server->m_gfxContext = nullptr;
-            server->m_gfxOpened = false;
-            server->m_gfxReady = false;
-            server->m_surfaceId = 0;
-            server->m_hasActiveSurface = false;
-        }
+    if (server->m_activePeer == peer) {
+        server->m_activePeer = nullptr;
+        server->m_gfxChannel.close();
     }
-    {
-        std::lock_guard<std::mutex> lock(server->m_frameQueueMutex);
-        server->m_frameQueue.clear();
-    }
-    {
-        std::lock_guard<std::mutex> lock(server->m_pendingFramesMutex);
-        server->m_pendingFrames.clear();
-        server->m_pendingFrameTimestamps.clear();
-    }
-    server->m_frameQueueCond.notify_all();
     {
         QMutexLocker locker(&server->m_cliprdrMutex);
         if (server->m_activePeer == peer) {
@@ -697,7 +668,6 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
             server->m_audioReady = false;
         }
     }
-    server->m_outputSuppressed = false;
     server->m_cursorHidden = false;
     server->m_cursorCache.clear();
     server->m_lastUsedCursor = nullptr;
@@ -759,6 +729,11 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
 {
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(peer->context);
     RdpServer* server = ctx->server;
+
+    if (ctx->activated) {
+        qInfo() << "peerActivate: Peer already activated, skipping re-initialization.";
+        return TRUE;
+    }
     
     qInfo() << "Client activation capability exchange completed. Initializing Graphics Pipeline (RDPGFX)...";
     
@@ -829,7 +804,9 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     // Register Input Callbacks
     if (peer->context && peer->context->input) {
         peer->context->input->param1 = server;
+        peer->context->input->SynchronizeEvent = peerSynchronizeEvent;
         peer->context->input->MouseEvent = peerMouseEvent;
+        peer->context->input->RelMouseEvent = peerRelMouseEvent;
         peer->context->input->ExtendedMouseEvent = peerExtendedMouseEvent;
         peer->context->input->KeyboardEvent = peerKeyboardEvent;
         peer->context->input->UnicodeKeyboardEvent = peerUnicodeKeyboardEvent;
@@ -874,48 +851,15 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     }
 
 
-    // Create RdpgfxServerContext
-    RdpgfxServerContext* gfx = rdpgfx_server_context_new(ctx->vcm);
-    if (!gfx) {
-        qWarning() << "Failed to create rdpgfx server context";
+    // Initialize RDPGFX channel via RdpGfxChannel component
+    if (!server->m_gfxChannel.initialize(ctx->vcm, reinterpret_cast<rdpContext*>(ctx))) {
+        qWarning() << "Failed to initialize RDPGFX channel";
         return FALSE;
-    }
-    
-    gfx->rdpcontext = reinterpret_cast<rdpContext*>(ctx);
-    gfx->ChannelIdAssigned = my_rdpgfx_channel_id_assigned;
-    gfx->CapsAdvertise = my_rdpgfx_caps_advertise;
-    gfx->FrameAcknowledge = my_rdpgfx_frame_acknowledge;
-    gfx->QoeFrameAcknowledge = my_rdpgfx_qoe_frame_acknowledge;
-    
-    if (!gfx->Initialize(gfx, FALSE)) {
-        qWarning() << "Failed to initialize rdpgfx server context";
-        rdpgfx_server_context_free(gfx);
-        return FALSE;
-    }
-    
-    // Safely assign gfx context to RdpServer
-    {
-        QMutexLocker locker(&server->m_gfxMutex);
-        if (server->m_gfxContext) {
-            rdpgfx_server_context_free(server->m_gfxContext);
-        }
-        server->m_gfxContext = gfx;
-        server->m_gfxOpened = false;
-        server->m_gfxReady = false;
-        server->m_surfaceId = 0;
-        server->m_hasActiveSurface = false;
-        server->m_frameId = 0;
     }
 
     if (ctx->vcm && WTSVirtualChannelManagerIsChannelJoined(ctx->vcm, "drdynvc")) {
         if (WTSVirtualChannelManagerGetDrdynvcState(ctx->vcm) == DRDYNVC_STATE_READY) {
-            QMutexLocker locker(&server->m_gfxMutex);
-            if (server->m_gfxContext && !server->m_gfxOpened) {
-                if (server->m_gfxContext->Open(server->m_gfxContext)) {
-                    server->m_gfxOpened = true;
-                    qInfo() << "RDPGFX dynamic virtual channel opened in peerActivate!";
-                }
-            }
+            server->m_gfxChannel.markOpened();
             setup_and_open_disp(ctx, server);
         }
     }
@@ -1018,390 +962,9 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     qInfo() << "PostConnect stage reached successfully and user authenticated";
     return TRUE;
 }
-
-BOOL RdpServer::my_rdpgfx_channel_id_assigned(RdpgfxServerContext* context, UINT32 channelId)
-{
-    Q_UNUSED(context);
-    qInfo() << "RDPGFX ChannelIdAssigned callback received with channelId:" << channelId;
-    return TRUE;
-}
-
-UINT RdpServer::my_rdpgfx_frame_acknowledge(RdpgfxServerContext* context, const RDPGFX_FRAME_ACKNOWLEDGE_PDU* frameAcknowledge)
-{
-    if (!context || !context->rdpcontext) return CHANNEL_RC_OK;
-    MyPeerContext* peerCtx = reinterpret_cast<MyPeerContext*>(context->rdpcontext);
-    RdpServer* server = peerCtx->server;
-    if (server) {
-        server->m_lastAckedFrameId = frameAcknowledge->frameId;
-        {
-            std::lock_guard<std::mutex> lock(server->m_pendingFramesMutex);
-            server->m_pendingFrames.remove(frameAcknowledge->frameId);
-            if (!server->m_pendingFrameTimestamps.empty()) {
-                auto sentTime = server->m_pendingFrameTimestamps.front().second;
-                auto now = std::chrono::steady_clock::now();
-                int64_t rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sentTime).count();
-                server->m_lastRttMs = rttMs;
-                server->m_pendingFrameTimestamps.pop_front();
-            }
-        }
-        server->m_frameQueueCond.notify_one();
-    }
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::my_rdpgfx_qoe_frame_acknowledge(RdpgfxServerContext* context, const RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU* qoeFrameAcknowledge)
-{
-    if (!context || !context->rdpcontext) return CHANNEL_RC_OK;
-    MyPeerContext* peerCtx = reinterpret_cast<MyPeerContext*>(context->rdpcontext);
-    RdpServer* server = peerCtx->server;
-    if (server) {
-        server->m_lastAckedFrameId = qoeFrameAcknowledge->frameId;
-        {
-            std::lock_guard<std::mutex> lock(server->m_pendingFramesMutex);
-            server->m_pendingFrames.remove(qoeFrameAcknowledge->frameId);
-            if (!server->m_pendingFrameTimestamps.empty()) {
-                auto sentTime = server->m_pendingFrameTimestamps.front().second;
-                auto now = std::chrono::steady_clock::now();
-                int64_t rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sentTime).count();
-                server->m_lastRttMs = rttMs;
-                server->m_pendingFrameTimestamps.pop_front();
-            }
-        }
-        server->m_frameQueueCond.notify_one();
-    }
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::my_rdpgfx_caps_advertise(RdpgfxServerContext* context, const RDPGFX_CAPS_ADVERTISE_PDU* capsAdvertise)
-{
-    qInfo() << "GFX CapsAdvertise callback received from client!";
-    
-    MyPeerContext* peerCtx = reinterpret_cast<MyPeerContext*>(context->rdpcontext);
-    RdpServer* server = peerCtx->server;
-    freerdp_peer* peer = peerCtx->peer;
-    rdpSettings* settings = peer->context->settings;
-    UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
-    UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-    
-    // Select the optimal capability set advertised by client that supports AVC/H.264.
-    // - Mac clients advertise RDPGFX_CAPVERSION_107 (0x000A0701).
-    // - Windows mstsc advertises up to 10.6, where RDPGFX_CAPVERSION_104 (0x000A0400) is the
-    //   gold standard for AVC420 without triggering scaled output errata.
-    UINT32 selectedVersion = 0;
-    UINT32 selectedFlags = 0;
-    bool has107 = false;
-    bool has104 = false;
-    UINT32 flags107 = 0;
-    UINT32 flags104 = 0;
-
-    for (UINT16 i = 0; i < capsAdvertise->capsSetCount; i++) {
-        const RDPGFX_CAPSET* capsSet = &capsAdvertise->capsSets[i];
-        qInfo() << "Client capability set version:" << QString("0x%1").arg(capsSet->version, 8, 16, QChar('0'))
-                 << "length:" << capsSet->length
-                 << "flags:" << QString("0x%1").arg(capsSet->flags, 8, 16, QChar('0'));
-        
-        // Skip caps sets where AVC is explicitly disabled
-        if (capsSet->flags & RDPGFX_CAPS_FLAG_AVC_DISABLED) {
-            continue;
-        }
-
-        if (capsSet->version == RDPGFX_CAPVERSION_107) {
-            has107 = true;
-            flags107 = capsSet->flags;
-        } else if (capsSet->version == RDPGFX_CAPVERSION_104) {
-            has104 = true;
-            flags104 = capsSet->flags;
-        } else if (selectedVersion == 0 && capsSet->version <= RDPGFX_CAPVERSION_107) {
-            selectedVersion = capsSet->version;
-            selectedFlags = capsSet->flags;
-        }
-    }
-
-    if (has107) {
-        selectedVersion = RDPGFX_CAPVERSION_107;
-        selectedFlags = flags107;
-    } else if (has104) {
-        selectedVersion = RDPGFX_CAPVERSION_104;
-        selectedFlags = flags104;
-    }
-    
-    // Fallback if no matching version found
-    if (selectedVersion == 0 && capsAdvertise->capsSetCount > 0) {
-        selectedVersion = capsAdvertise->capsSets[0].version;
-        selectedFlags = capsAdvertise->capsSets[0].flags;
-    }
-    
-    RDPGFX_CAPS_CONFIRM_PDU confirm;
-    RDPGFX_CAPSET confirmCapsSet;
-    confirm.capsSet = &confirmCapsSet;
-    confirmCapsSet.version = selectedVersion;
-    // MS-RDPEGFX 2.2.3.3: capsDataLength MUST be set to 0x00000004 for all version formats!
-    // Passing RDPGFX_CAPSET_BASE_SIZE (8) caused Windows mstsc to reject the PDU and black screen!
-    confirmCapsSet.length = 4;
-    confirmCapsSet.flags = selectedFlags;
-    
-    qInfo() << "Confirming RDPGFX capability set version:" << QString("0x%1").arg(selectedVersion, 8, 16, QChar('0'))
-             << "flags:" << selectedFlags;
-             
-    UINT result = context->CapsConfirm(context, &confirm);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "CapsConfirm failed with error:" << result;
-        return result;
-    }
-    
-    // Send ResetGraphics with primary monitor definition
-    MONITOR_DEF monitorDef;
-    monitorDef.left = 0;
-    monitorDef.top = 0;
-    monitorDef.right = width;
-    monitorDef.bottom = height;
-    monitorDef.flags = 1; // Primary monitor
-    
-    RDPGFX_RESET_GRAPHICS_PDU resetPdu;
-    resetPdu.width = width;
-    resetPdu.height = height;
-    resetPdu.monitorCount = 1;
-    resetPdu.monitorDefArray = &monitorDef;
-    
-    result = context->ResetGraphics(context, &resetPdu);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "ResetGraphics failed with error:" << result;
-        return result;
-    }
-    
-    // Create primary surface with standard XRGB 8888 primary surface pixel format
-    server->m_surfaceId = 0;
-    RDPGFX_CREATE_SURFACE_PDU createPdu;
-    createPdu.surfaceId = server->m_surfaceId;
-    createPdu.width = width;
-    createPdu.height = height;
-    createPdu.pixelFormat = GFX_PIXEL_FORMAT_XRGB_8888;
-    
-    result = context->CreateSurface(context, &createPdu);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "CreateSurface failed with error:" << result;
-        return result;
-    }
-    
-    // Map surface to output 0
-    RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU mapPdu;
-    mapPdu.surfaceId = server->m_surfaceId;
-    mapPdu.reserved = 0;
-    mapPdu.outputOriginX = 0;
-    mapPdu.outputOriginY = 0;
-    
-    result = context->MapSurfaceToOutput(context, &mapPdu);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "MapSurfaceToOutput failed with error:" << result;
-        return result;
-    }
-    
-    server->m_hasActiveSurface = true;
-    server->m_surfaceWidth = width;
-    server->m_surfaceHeight = height;
-    server->m_gfxReady = true;
-    qInfo() << "GFX graphics pipeline initialized successfully for resolution:" << width << "x" << height;
-    return CHANNEL_RC_OK;
-}
-
-void RdpServer::startSubmissionThread()
-{
-    if (m_submissionRunning.exchange(true)) {
-        return;
-    }
-    m_submissionThread = std::thread([this]() {
-        while (m_submissionRunning) {
-            QueuedVideoFrame frame;
-            {
-                std::unique_lock<std::mutex> lock(m_frameQueueMutex);
-                m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(5), [this]() {
-                    return !m_submissionRunning || (!m_frameQueue.empty() && hasInFlightCapacity());
-                });
-
-                if (!m_submissionRunning) {
-                    break;
-                }
-
-                if (m_frameQueue.empty() || !hasInFlightCapacity() || !m_gfxReady || m_outputSuppressed) {
-                    continue;
-                }
-
-                frame = std::move(m_frameQueue.front());
-                m_frameQueue.pop_front();
-            }
-
-            submitFrameToGfx(frame);
-        }
-    });
-}
-
-void RdpServer::stopSubmissionThread()
-{
-    if (!m_submissionRunning.exchange(false)) {
-        return;
-    }
-    m_frameQueueCond.notify_all();
-    if (m_submissionThread.joinable()) {
-        m_submissionThread.join();
-    }
-    {
-        std::lock_guard<std::mutex> lock(m_frameQueueMutex);
-        m_frameQueue.clear();
-    }
-    {
-        std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-        m_pendingFrames.clear();
-        m_pendingFrameTimestamps.clear();
-    }
-}
-
-bool RdpServer::hasInFlightCapacity()
-{
-    std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    // Allow up to 6 in-flight frames to prevent animation bursts (e.g. window close) from stalling
-    if (m_pendingFrames.size() < 6) {
-        return true;
-    }
-    // Safety fallback: if an ACK was delayed and frames have been pending > 80ms,
-    // clear the pending queue so streaming never permanently freezes or lags behind.
-    const auto now = std::chrono::steady_clock::now();
-    if (!m_pendingFrameTimestamps.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 80) {
-        m_pendingFrames.clear();
-        m_pendingFrameTimestamps.clear();
-        return true;
-    }
-    return false;
-}
-
 void RdpServer::sendVideoFrame(const QByteArray &data, bool isKeyFrame)
 {
-    if (data.isEmpty() || !m_gfxReady || m_outputSuppressed) {
-        return;
-    }
-
-    if (m_waitingForKeyFrame) {
-        if (!isKeyFrame && m_droppedFramesWaitingForKey.load() < 8) {
-            m_droppedFramesWaitingForKey++;
-            return;
-        }
-        m_waitingForKeyFrame = false;
-        m_droppedFramesWaitingForKey = 0;
-        if (isKeyFrame) {
-            qInfo() << "sendVideoFrame: Received clean IDR keyframe! Resuming video output.";
-        } else {
-            qInfo() << "sendVideoFrame: Keyframe timeout reached, resuming video output.";
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(m_frameQueueMutex);
-        if (isKeyFrame) {
-            m_frameQueue.clear();
-        } else if (m_frameQueue.size() > 8) {
-            // If the queue exceeds 8 frames (~130ms of video backlog), the client is congested.
-            // Flush queue and request an immediate IDR keyframe to prevent memory bloat and latency buildup.
-            m_frameQueue.clear();
-            m_waitingForKeyFrame = true;
-            m_droppedFramesWaitingForKey = 0;
-            return;
-        }
-        m_frameQueue.push_back({data, isKeyFrame});
-    }
-    m_frameQueueCond.notify_one();
-}
-
-void RdpServer::submitFrameToGfx(const QueuedVideoFrame &frame)
-{
-    QMutexLocker locker(&m_gfxMutex);
-    if (!m_gfxContext || !m_gfxReady || m_outputSuppressed) {
-        return;
-    }
-
-    MyPeerContext* peerCtx = reinterpret_cast<MyPeerContext*>(m_gfxContext->rdpcontext);
-    if (!peerCtx || !peerCtx->peer || !peerCtx->peer->context || !peerCtx->peer->context->settings) {
-        return;
-    }
-    freerdp_peer* peer = peerCtx->peer;
-    rdpSettings* settings = peer->context->settings;
-    UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
-    UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-
-    const auto now = QDateTime::currentDateTimeUtc().time();
-    UINT32 timestamp = (now.hour() << 22) | (now.minute() << 16) | (now.second() << 10) | now.msec();
-
-    const auto frameId = m_frameId++;
-    m_lastSentFrameId = frameId;
-    {
-        std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-        m_pendingFrames.insert(frameId);
-        m_pendingFrameTimestamps.push_back({frameId, std::chrono::steady_clock::now()});
-    }
-
-    RDPGFX_START_FRAME_PDU startFrame;
-    startFrame.timestamp = timestamp;
-    startFrame.frameId = frameId;
-
-    if (startFrame.frameId == 0 || frame.isKeyFrame) {
-        qInfo() << "sendVideoFrame: Transmitting" << (frame.isKeyFrame ? "keyframe" : "frame")
-                << "id:" << startFrame.frameId << "size:" << frame.data.size() << "bytes";
-    }
-
-    RDPGFX_END_FRAME_PDU endFrame;
-    endFrame.frameId = startFrame.frameId;
-
-    RECTANGLE_16 regionRect;
-    regionRect.left = 0;
-    regionRect.top = 0;
-    regionRect.right = width;
-    regionRect.bottom = height;
-
-    RDPGFX_H264_QUANT_QUALITY quantQuality;
-    quantQuality.qpVal = 0;
-    quantQuality.qualityVal = 100;
-    quantQuality.qp = 20;
-    quantQuality.r = 0;
-    quantQuality.p = 0;
-
-    RDPGFX_AVC420_BITMAP_STREAM avc420;
-    memset(&avc420, 0, sizeof(avc420));
-    avc420.meta.numRegionRects = 1;
-    avc420.meta.regionRects = &regionRect;
-    avc420.meta.quantQualityVals = &quantQuality;
-    avc420.length = frame.data.size();
-    avc420.data = reinterpret_cast<BYTE*>(const_cast<char*>(frame.data.data()));
-
-    RDPGFX_SURFACE_COMMAND cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.surfaceId = m_surfaceId;
-    cmd.codecId = RDPGFX_CODECID_AVC420;
-    cmd.contextId = 0;
-    cmd.format = PIXEL_FORMAT_BGRX32;
-    cmd.left = 0;
-    cmd.top = 0;
-    cmd.right = width;
-    cmd.bottom = height;
-    cmd.width = width;
-    cmd.height = height;
-    cmd.length = 0;
-    cmd.data = nullptr;
-    cmd.extra = &avc420;
-
-    UINT result = m_gfxContext->StartFrame(m_gfxContext, &startFrame);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "StartFrame failed with error:" << result;
-        std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-        m_pendingFrames.remove(frameId);
-        return;
-    }
-    result = m_gfxContext->SurfaceCommand(m_gfxContext, &cmd);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "SurfaceCommand failed with error:" << result;
-    }
-    result = m_gfxContext->EndFrame(m_gfxContext, &endFrame);
-    if (result != CHANNEL_RC_OK) {
-        qWarning() << "EndFrame failed with error:" << result;
-    }
+    m_gfxChannel.sendFrame(data, isKeyFrame);
 }
 
 static QByteArray createXorMask(const QImage &image)
@@ -1514,89 +1077,23 @@ void RdpServer::updateCursorShape(const QImage &image, const QPoint &hotspot)
 
 void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
 {
-    QMutexLocker locker(&m_gfxMutex);
-    if (!m_gfxContext || !m_gfxOpened) return;
-
-    if (m_surfaceWidth == width && m_surfaceHeight == height && m_hasActiveSurface) {
-        qInfo() << "RDPGFX surface already configured at" << width << "x" << height << ", skipping duplicate reset";
-        return;
-    }
-
-    qInfo() << "Resetting RDPGFX surface from" << m_surfaceWidth << "x" << m_surfaceHeight
-            << "to" << width << "x" << height;
-
-    if (m_hasActiveSurface) {
-        RDPGFX_DELETE_SURFACE_PDU delPdu;
-        delPdu.surfaceId = m_surfaceId;
-        UINT rc = m_gfxContext->DeleteSurface(m_gfxContext, &delPdu);
-        if (rc != CHANNEL_RC_OK) {
-            qWarning() << "DeleteSurface failed with code:" << rc;
+    if (m_activePeer && m_activePeer->context) {
+        if (m_activePeer->context->settings) {
+            freerdp_settings_set_uint32(m_activePeer->context->settings, FreeRDP_DesktopWidth, width);
+            freerdp_settings_set_uint32(m_activePeer->context->settings, FreeRDP_DesktopHeight, height);
         }
-        m_hasActiveSurface = false;
-    }
-
-    m_surfaceWidth = width;
-    m_surfaceHeight = height;
-    m_droppedFramesWaitingForKey = 0;
-    m_waitingForKeyFrame = true;
-
-    MyPeerContext* peerCtx = reinterpret_cast<MyPeerContext*>(m_gfxContext->rdpcontext);
-    if (peerCtx && peerCtx->peer && peerCtx->peer->context) {
-        if (peerCtx->peer->context->settings) {
-            freerdp_settings_set_uint32(peerCtx->peer->context->settings, FreeRDP_DesktopWidth, width);
-            freerdp_settings_set_uint32(peerCtx->peer->context->settings, FreeRDP_DesktopHeight, height);
-        }
-        if (peerCtx->peer->context->update && peerCtx->peer->context->update->DesktopResize) {
-            peerCtx->peer->context->update->DesktopResize(peerCtx->peer->context);
+        if (m_activePeer->context->update && m_activePeer->context->update->DesktopResize) {
+            m_activePeer->context->update->DesktopResize(m_activePeer->context);
         }
     }
-
-    MONITOR_DEF monitorDef;
-    monitorDef.left = 0;
-    monitorDef.top = 0;
-    monitorDef.right = width;
-    monitorDef.bottom = height;
-    monitorDef.flags = 1;
-
-    RDPGFX_RESET_GRAPHICS_PDU resetPdu;
-    resetPdu.width = width;
-    resetPdu.height = height;
-    resetPdu.monitorCount = 1;
-    resetPdu.monitorDefArray = &monitorDef;
-    UINT rc = m_gfxContext->ResetGraphics(m_gfxContext, &resetPdu);
-    if (rc != CHANNEL_RC_OK) {
-        qWarning() << "ResetGraphics failed with code:" << rc;
-    }
-
-    m_surfaceId++;
-    RDPGFX_CREATE_SURFACE_PDU createPdu;
-    createPdu.surfaceId = m_surfaceId;
-    createPdu.width = width;
-    createPdu.height = height;
-    createPdu.pixelFormat = GFX_PIXEL_FORMAT_XRGB_8888;
-    rc = m_gfxContext->CreateSurface(m_gfxContext, &createPdu);
-    if (rc != CHANNEL_RC_OK) {
-        qWarning() << "CreateSurface failed with code:" << rc;
-    }
-
-    RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU mapPdu;
-    mapPdu.surfaceId = m_surfaceId;
-    mapPdu.reserved = 0;
-    mapPdu.outputOriginX = 0;
-    mapPdu.outputOriginY = 0;
-    rc = m_gfxContext->MapSurfaceToOutput(m_gfxContext, &mapPdu);
-    if (rc != CHANNEL_RC_OK) {
-        qWarning() << "MapSurfaceToOutput failed with code:" << rc;
-    }
-
-    m_hasActiveSurface = true;
-    qInfo() << "RDPGFX surface reset successfully to" << width << "x" << height << "surfaceId:" << m_surfaceId;
+    m_gfxChannel.resetSurface(width, height);
 }
 
 BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
 {
     Q_UNUSED(flags);
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     const auto stuck = server->m_pressedKeys;
@@ -1609,7 +1106,8 @@ BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
 
 BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1662,9 +1160,37 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
     return TRUE;
 }
 
+BOOL RdpServer::peerRelMouseEvent(rdpInput* input, UINT16 flags, INT16 xDelta, INT16 yDelta)
+{
+    Q_UNUSED(xDelta);
+    Q_UNUSED(yDelta);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
+    if (!server) return TRUE;
+
+    emit server->clientActivity();
+
+    if (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3)) {
+        if (flags & PTR_FLAGS_BUTTON1) {
+            uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
+            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_LEFT /* 272 */), state);
+        }
+        if (flags & PTR_FLAGS_BUTTON2) {
+            uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
+            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_RIGHT /* 273 */), state);
+        }
+        if (flags & PTR_FLAGS_BUTTON3) {
+            uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
+            emit server->pointerButton(BTN_MIDDLE /* 274 */, state);
+        }
+    }
+    return TRUE;
+}
+
 BOOL RdpServer::peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1686,7 +1212,8 @@ BOOL RdpServer::peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, 
 
 BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1711,7 +1238,8 @@ BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
 
 BOOL RdpServer::peerUnicodeKeyboardEvent(rdpInput* input, UINT16 flags, UINT16 code)
 {
-    RdpServer* server = static_cast<RdpServer*>(input->param1);
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
+    RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
     emit server->clientActivity();
@@ -1739,14 +1267,8 @@ BOOL RdpServer::peerSuppressOutput(rdpContext* context, BYTE allow, const RECTAN
         return TRUE;
     }
     bool suppressed = (allow == 0);
-    bool wasSuppressed = ctx->server->m_outputSuppressed.exchange(suppressed);
     qInfo() << "SuppressOutput PDU received: allow =" << (int)allow << "(suppressed =" << suppressed << ")";
-    if (wasSuppressed && !suppressed) {
-        // Window un-minimized: wait for clean IDR keyframe to prevent decoding corruption
-        ctx->server->m_droppedFramesWaitingForKey = 0;
-        ctx->server->m_waitingForKeyFrame = true;
-        qInfo() << "RdpServer: Output unsuppressed. Waiting for clean IDR keyframe to prevent decode artifacts...";
-    }
+    ctx->server->m_gfxChannel.setOutputSuppressed(suppressed);
     return TRUE;
 }
 

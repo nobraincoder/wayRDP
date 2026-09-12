@@ -28,6 +28,7 @@ find_path(KF6GUIADDONS_INCLUDE_DIR NAMES KColorUtils PATH_SUFFIXES KF6/KGuiAddon
 set(SOURCES
     src/main.cpp
     src/RdpServer.cpp
+    src/RdpGfxChannel.cpp
     src/KWinVirtualDisplay.cpp
     src/PipeWireStreamController.cpp
     src/QtAudioController.cpp
