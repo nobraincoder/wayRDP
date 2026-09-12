@@ -18,15 +18,11 @@ find_library(PAM_LIBRARY NAMES pam REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FREERDP REQUIRED IMPORTED_TARGET freerdp3 freerdp-server3 winpr3)
 pkg_check_modules(LIBEI REQUIRED IMPORTED_TARGET libei-1.0)
+pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
+pkg_check_modules(SPA REQUIRED IMPORTED_TARGET libspa-0.2)
 
-include_directories(
-    /usr/include/KPipeWire
-    /usr/include/pipewire-0.3
-    /usr/include/spa-0.2
-    /usr/include/freerdp3
-    /usr/include/winpr3
-    /usr/include/KF6/KGuiAddons
-)
+find_path(KPIPEWIRE_INCLUDE_DIR NAMES pipewirebaseencodedstream.h PATH_SUFFIXES KPipeWire)
+find_path(KF6GUIADDONS_INCLUDE_DIR NAMES KColorUtils PATH_SUFFIXES KF6/KGuiAddons)
 
 # Add source files
 set(SOURCES
@@ -43,6 +39,13 @@ set(SOURCES
 
 add_executable(wayrdp ${SOURCES})
 
+target_include_directories(wayrdp PRIVATE
+    ${KPIPEWIRE_INCLUDE_DIR}
+    ${KF6GUIADDONS_INCLUDE_DIR}
+    ${PIPEWIRE_INCLUDE_DIRS}
+    ${SPA_INCLUDE_DIRS}
+)
+
 target_link_libraries(wayrdp PRIVATE
     Qt6::Core
     Qt6::Gui
@@ -52,6 +55,7 @@ target_link_libraries(wayrdp PRIVATE
     KF6::GuiAddons
     PkgConfig::FREERDP
     PkgConfig::LIBEI
+    PkgConfig::PIPEWIRE
     ${PAM_LIBRARY}
     KPipeWire
     KPipeWireDmaBuf
