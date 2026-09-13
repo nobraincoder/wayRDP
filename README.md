@@ -10,36 +10,32 @@ Unlike standard RDP implementations that simply mirror physical monitors, `wayrd
 
 ---
 
-## Key Features
+## Key Features (Beyond KRdp)
 
-- **Hardware-Accelerated Zero-Latency Video (VA-API / H.264):**
-  - Streams desktop frames with zero-copy DMA-BUF capture via PipeWire and KPipeWire at up to 60 FPS.
-  - Zero-latency GPU encoding (`async_depth = 1` / `tune = zerolatency`) eliminating trapped frames or trailing ghost artifacts.
-  - Support for H.264 Main (CABAC & 8x8 transform for crisp text), H.264 Baseline, VP8, and VP9.
-- **Dynamic Framerate & Bitrate Adaptation:**
-  - Real-time RTT latency measurement via FreeRDP RDPGFX frame acknowledgments.
-  - Exponentially Weighted Moving Average (EWMA) network smoothing dynamically scaling framerate (20–60 FPS) and visual quality (50–95%) without tearing down the stream.
-- **Bidirectional Clipboard File Transfer (`[MS-RDPECLIP]`):**
-  - **Client to Host:** Copy files on Windows/macOS and paste directly into KDE Dolphin via `text/uri-list` on `KSystemClipboard` (streamed to `$XDG_RUNTIME_DIR/rdp-clipboard/`).
-  - **Host to Client:** Copy files in Dolphin and paste directly into Windows Explorer or macOS Finder via `FileGroupDescriptorW` and `FileContents` virtual channels.
+While official KDE KRdp provides screen-sharing and mirroring of physical monitors, `wayrdp` is built specifically for headless virtual sessions with features not supported by KRdp:
+
+- **Isolated Headless Virtual Display (`VIRTUAL-1`):**
+  - Spawns an on-demand, private virtual monitor in KWin via `xdg-desktop-portal-kde`.
+  - Physical local monitors stay powered off or private; operates seamlessly with laptop lids closed or on completely headless mini PCs.
 - **Dynamic Display Resizing & HiDPI Preservation (`[MS-RDPEDISP]`):**
-  - Automatically negotiates client window resizing on the fly via `kscreen-doctor` without tearing down the session.
-  - Preserves client high-DPI fractional scaling (e.g., 1.25x / 1.5x) preventing desktop blurriness and cursor distortion.
-- **Direct Low-Latency EIS Input:** Direct `libei` socket integration with KWin bypassing D-Bus IPC for near-zero input latency.
-- **KDE System Input Sync & Natural Scrolling:**
-  - Automatically parses and synchronizes touchpad natural scrolling, scroll speed multiplier (`ScrollFactor`), and left-handed mouse mapping from KDE Plasma settings (`kcminputrc`).
-- **Host Cursor Theme & Size Sync:**
-  - Automatically matches the host cursor theme and size with clean 32-bit ARGB alpha transparency and LRU shape caching.
-- **Session Lifecycle & Security Integration:**
-  - **Sleep Inhibit:** Prevents system suspend while an active RDP session is connected (`org.freedesktop.PowerManagement.Inhibit`).
-  - **Auto-Lock on Disconnect:** Automatically triggers KDE screen lock (`org.freedesktop.ScreenSaver.Lock`) when the client disconnects.
+  - Dynamically resizes the virtual display resolution in real-time via `kscreen-doctor` when resizing client windows without dropping the session.
+  - Preserves fractional scaling (1.25x, 1.5x) on high-DPI and Retina client screens to eliminate blurriness and cursor distortion.
+- **Bidirectional Clipboard File Transfer (`[MS-RDPECLIP]`):**
+  - Supports true file copying and pasting between client and host alongside text clipboard:
+    - **Client to Host:** Copy files on Windows/macOS and paste directly into KDE Dolphin via `KSystemClipboard`.
+    - **Host to Client:** Copy files in Dolphin and paste directly into Windows Explorer or macOS Finder via `FileGroupDescriptorW` / `FileContents` virtual channels.
+- **Zero-Prompt Remote Activation:**
+  - Pre-seeds `org.freedesktop.impl.portal.PermissionStore` at startup, allowing headless connections without requiring physical confirmation at the host screen.
+- **Session Auto-Lock on Disconnect:**
+  - Automatically invokes KDE screen lock (`org.freedesktop.ScreenSaver.Lock` / `loginctl`) the instant the client disconnects to secure the workstation.
 - **Idle Power Saver:**
-  - Dynamically throttles stream capture to 5 FPS after 30 seconds of user inactivity, resuming 60 FPS instantly upon input.
-- **Multi-Monitor Support:**
-  - Full support for multi-monitor client layouts (`/multimon`) by calculating a unified bounding canvas across all active client displays.
-- **Zero-Prompt Remote Activation:** Automatically pre-seeds `org.freedesktop.impl.portal.PermissionStore` to start virtual screen sessions completely headless without GUI desktop prompts.
-- **Orderly Teardown & Display Recovery:** Traps POSIX termination signals (`SIGINT`/`SIGTERM`) and client disconnects to destroy virtual displays and restore physical output (`eDP-1`) priority cleanly.
-- **Systemd User Service Integration:** Managed as an unprivileged user service (`systemctl --user`) with automated restart on failure.
+  - Automatically throttles video capture and encoding to 5 FPS after 30 seconds of inactivity, instantly ramping back to 60 FPS upon mouse or keyboard input.
+- **Dynamic Multi-Monitor Bounding Canvas (`/multimon`):**
+  - Dynamically calculates a unified bounding canvas across all active client displays when connecting in multi-monitor mode.
+- **KDE System Settings Live Sync:**
+  - Synchronizes touchpad natural scrolling, scroll speed multiplier (`ScrollFactor`), and left-handed mouse mapping directly from `kcminputrc`, hot-reloading changes in real time via `QFileSystemWatcher`.
+- **Orderly Teardown & Primary Display Recovery:**
+  - Automatically restores primary physical display output (`eDP-1`) priorities upon disconnect or process termination (`SIGINT`/`SIGTERM`) to avoid orphaned virtual outputs.
 
 ---
 
