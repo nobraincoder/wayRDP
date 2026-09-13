@@ -201,7 +201,7 @@ RDP_LOCK_ON_DISCONNECT=1
 
 ## Known Limitations
 
-- **Session Lifecycle & Cold-Boot (No SDDM / Login Screen Support):** `wayrdp` operates as an unprivileged user service (`systemctl --user`) attaching to an existing `kwin_wayland` session. It cannot initiate logins from a cold-boot SDDM display manager screen; the host user must already be logged in (or have auto-login enabled).
+- **Session Lifecycle & Cold-Boot (No Plasma Login Manager / Display Manager Support):** `wayrdp` operates as an unprivileged user service (`systemctl --user`) attaching to an existing `kwin_wayland` session. It cannot initiate logins from a cold-boot display manager screen; the host user must already be logged in (or have auto-login enabled).
 - **Single Active Client Session:** Designed for personal workstation access. Supports one active client connection at a time (sequential reconnects); concurrent multi-seat or multi-tenant desktop sessions are not supported.
 - **Audio Output & Microphone Redirection (`[MS-RDPSND]`, `[MS-RDPEAI]`):** Remote audio playback and microphone capture redirection are currently in active development. Audio generated in the session plays on the host machine's physical audio devices.
 - **Drive Redirection (`[MS-RDPEFS]`):** Mounting client local drives or folders as virtual drives inside Dolphin is not yet implemented; file transfers are handled via bidirectional clipboard copy/paste.
