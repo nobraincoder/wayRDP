@@ -91,9 +91,6 @@ void RdpServer::generateCertificate()
     if (QFile::exists(certPath) && QFile::exists(keyPath)) {
         return;
     }
-    if (QFile::exists("server.crt") && QFile::exists("server.key")) {
-        return;
-    }
 
     qInfo() << "Generating self-signed SSL/TLS certificate for FreeRDP...";
     QProcess proc;
@@ -509,6 +506,9 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QString certPath = certDir + "/server.crt";
     QString keyPath = certDir + "/server.key";
+    if (!QFile::exists(certPath) || !QFile::exists(keyPath)) {
+        server->generateCertificate();
+    }
     if (!QFile::exists(certPath) || !QFile::exists(keyPath)) {
         if (QFile::exists("server.crt") && QFile::exists("server.key")) {
             certPath = "server.crt";
