@@ -6,7 +6,7 @@ Unlike standard RDP implementations that simply mirror physical monitors, `wayrd
 
 ---
 
-[Features](#key-features) • [Prerequisites & Install](#system-requirements) • [Configuration](#configuration-reference) • [Client Setup](#connecting-from-clients) • [Troubleshooting](#troubleshooting--faq) • [Known Limitations](#known-limitations) • [Acknowledgements](#acknowledgements--inspirations)
+[Features](#key-features) • [Prerequisites & Install](#system-requirements) • [Configuration](#configuration-reference) • [Client Setup](#connecting-from-clients) • [Troubleshooting](#troubleshooting--faq) • [Known Limitations](#known-limitations) • [Roadmap](#whats-next-roadmap) • [Acknowledgements](#acknowledgements--inspirations)
 
 ---
 
@@ -345,6 +345,34 @@ Environment=KPIPEWIRE_FORCE_ENCODER=h264_vaapi
 This is included by default in the provided `wayrdp.service` unit.
 
 </details>
+
+---
+
+## What's Next (Roadmap)
+
+Active engineering and planned milestones for upcoming `wayRDP` releases:
+
+- **Audio Output & Microphone Redirection (`[MS-RDPSND]`, `[MS-RDPEAI]`):**
+  - Implement remote desktop audio streaming via a dedicated PipeWire virtual sink, routing host system audio directly over RDP to the client.
+  - Add remote microphone capture redirection (`[MS-RDPEAI]`) to pass client voice inputs back into the host system.
+- **Session Auto-Unlock on Connect:**
+  - When credentials are authenticated during RDP handshake, automatically unlock the locked KDE Plasma session via KScreenLocker / loginctl so the desktop is instantly usable without a secondary unlock prompt.
+- **Remote Drive Redirection (`[MS-RDPEFS]`):**
+  - Seamlessly mount client-side folders and local disk drives directly into the host user's KDE Dolphin filesystem hierarchy alongside existing clipboard copy/paste.
+- **Discrete Multi-Monitor Virtual Displays:**
+  - Evolve from the current unified bounding-canvas model to provisioning discrete, independent virtual outputs (`VIRTUAL-1`, `VIRTUAL-2`, etc.) in KWin for true physical multi-monitor client setups.
+- **Windows Authentication & NLA Support:**
+  - Implement CredSSP / Network Level Authentication (NLA) support alongside standard Linux PAM, enabling seamless native authentication workflows for Windows RDP clients.
+- **System-Level Startup Daemon & Cold-Boot Login:**
+  - Extend beyond the current user-session daemon to support pre-session system daemons capable of attaching to display managers (like SDDM) or initializing virtual sessions prior to local user login.
+- **Loss-Tolerant UDP Transport (`[MS-RDPEUDP]`):**
+  - Implement RDP-UDP transport channels to deliver smooth framerates over high-latency, packet-loss-prone cellular or public internet connections.
+- **Advanced Touch & Stylus Gestures (`[MS-RDPEI]`):**
+  - Forward native multi-touch gestures (pinch-to-zoom, two-finger pan) and active pen/stylus pressure and tilt sensitivity into KWin.
+- **High Refresh Rates (120/144 Hz) & HDR Color Pipelines:**
+  - Add high-refresh-rate stream pacing and investigate 10-bit / HDR color pipelines for high-end client hardware.
+- **Compositor Architecture Expansion:**
+  - Implement native GNOME Mutter and generic wlroots backends for `IVirtualDisplayBackend`.
 
 ---
 
