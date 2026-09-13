@@ -356,4 +356,3 @@ This is included by default in the provided `wayrdp.service` unit.
 - **[gnome-remote-desktop](https://gitlab.gnome.org/GNOME/gnome-remote-desktop):** Pioneered the headless virtual monitor remote desktop paradigm on Wayland compositors.
 - **[FreeRDP](https://www.freerdp.org/):** The foundational open-source Remote Desktop Protocol core that powers wayRDP's dynamic virtual channels (`RDPGFX`, `RDPEDISP`, `CLIPRDR`), connection negotiation, and TLS cryptography.
 - **[KPipeWire](https://invent.kde.org/plasma/kpipewire) & [libei](https://gitlab.freedesktop.org/libinput/libei):** Provided the low-latency building blocks for zero-copy DMA-BUF video capture and direct Wayland emulated input injection.
-- **[lamco-rdp-server](https://github.com/lamco/rdp-server):** Provided valuable community insights and design discussions regarding standalone RDP server mechanics on Linux.
