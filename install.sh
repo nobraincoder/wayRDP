@@ -83,9 +83,23 @@ if [ ! -f "${CONFIG_FILE}" ]; then
         cp "${SCRIPT_DIR}/wayrdp.env.example" "${CONFIG_FILE}"
     else
         cat << 'EOF' > "${CONFIG_FILE}"
+# Server listening port (default: 3390, keeps 3389 free for official KRdp)
 RDP_PORT=3390
-RDP_PASSWORD=testpass
-KPIPEWIRE_FORCE_ENCODER=h264_vaapi
+
+# Fixed RDP password (leave commented out to authenticate using system PAM password)
+# RDP_PASSWORD=your_secure_password
+
+# Hardware Video Encoder Backend (vaapi, nvenc, x264)
+RDP_ENCODER=vaapi
+
+# Video Codec Profile (h264_main, h264_baseline, vp8, vp9)
+RDP_CODEC=h264_main
+
+# Video Encoding Quality (30 to 100)
+RDP_QUALITY=95
+
+# Hardware Encoder Latency & Pipeline Preference (speed, quality, size)
+RDP_ENCODER_PREFERENCE=speed
 EOF
     fi
     chmod 600 "${CONFIG_FILE}"
