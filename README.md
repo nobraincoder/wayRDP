@@ -47,12 +47,12 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
 - **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon Mesa, or NVIDIA VA-API wrapper)
 
 > [!NOTE]
-> **Platform Testing:** `wayrdp` has currently been tested primarily on **Arch Linux** (KDE Plasma 6 / Wayland). Packages and instructions for Fedora, Ubuntu, and Debian are community-contributed; issue reports and verification for other distributions are welcome!
+> **Platform Testing & Compatibility:** `wayrdp` is designed for **KDE Plasma 6 on Wayland**. It is tested on **Arch Linux**, **Fedora 40/41+**, and **Debian 13 (Trixie)** / **Ubuntu 24.10+**.
 
 <details>
-<summary><b>📦 Distribution Packages (Arch / Fedora / Ubuntu)</b></summary>
+<summary><b>📦 Supported Distributions & Packages (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
 
-#### 1. Arch Linux / EndeavourOS / Manjaro
+#### 1. Arch Linux / EndeavourOS / Manjaro / CachyOS / Garuda
 ```bash
 sudo pacman -S --needed \
     base-devel cmake extra-cmake-modules pkgconf \
@@ -61,7 +61,7 @@ sudo pacman -S --needed \
     libpulse libkscreen libva libva-utils
 ```
 
-#### 2. Fedora 40 / 41+
+#### 2. Fedora 40 / 41+ (Workstation / KDE Spin / Kinoite / Nobara)
 ```bash
 sudo dnf install \
     cmake extra-cmake-modules gcc-c++ pkgconfig \
@@ -71,7 +71,7 @@ sudo dnf install \
     libkscreen-devel libkscreen libva-devel
 ```
 
-#### 3. Ubuntu 24.10+ / Debian Trixie (Plasma 6 & Qt6)
+#### 3. Debian 13 (Trixie) / Debian Sid / Ubuntu 24.10+ / Kubuntu 24.10+ / KDE neon
 ```bash
 sudo apt-get install \
     build-essential cmake extra-cmake-modules pkg-config \
@@ -80,6 +80,30 @@ sudo apt-get install \
     libxkbcommon-dev libei-dev libpam0g-dev \
     libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all
 ```
+
+#### 4. openSUSE Tumbleweed & Slowroll
+```bash
+sudo zypper install \
+    cmake extra-cmake-modules gcc-c++ pkg-config \
+    qt6-base-devel qt6-multimedia-devel kf6-kguiaddons-devel \
+    libkpipewire-devel freerdp-devel libwinpr3-devel \
+    libxkbcommon-devel libei-devel pam-devel libopenssl-devel \
+    openssl libpulse-devel libkscreen6-devel libkscreen6-plugin
+```
+
+</details>
+
+<details>
+<summary><b>❌ Unsupported Environments (What will NOT work)</b></summary>
+
+The following systems are fundamentally incompatible with `wayrdp`:
+
+1. **Distributions on KDE Plasma 5** (e.g. Kubuntu 22.04 / 24.04 LTS, Debian 12 Bookworm, RHEL 8 / 9, Rocky Linux, Linux Mint):
+   - **Why:** Plasma 5 lacks the KWin Wayland virtual display portal (`types: 4u` was introduced in Plasma 6.0), has no built-in EIS (Emulated Input Server), and runs on Qt 5 / KF5 instead of Qt 6 / KF6.
+2. **Non-KDE Desktop Environments & Compositors** (GNOME, Hyprland, Sway, COSMIC, Cinnamon, XFCE):
+   - **Why:** `wayrdp` is built specifically to interact with KWin's internal Wayland display pipeline, `xdg-desktop-portal-kde`, and `kscreen-doctor`.
+3. **X11 / Xorg Sessions**:
+   - **Why:** `wayrdp` requires a Wayland compositor (`kwin_wayland`) for PipeWire DMA-BUF buffer capture and EIS virtual device emulation.
 
 </details>
 

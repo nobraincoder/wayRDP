@@ -40,6 +40,8 @@ check_dependencies() {
             echo "  Fedora:           sudo dnf install cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel kpipewire-devel freerdp-devel libwinpr-devel libxkbcommon-devel libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel libkscreen-devel libkscreen"
         elif command -v apt-get &>/dev/null; then
             echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev freerdp3-dev libwinpr3-dev libxkbcommon-dev libpam0g-dev libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin"
+        elif command -v zypper &>/dev/null; then
+            echo "  openSUSE:         sudo zypper install cmake extra-cmake-modules gcc-c++ pkg-config qt6-base-devel qt6-multimedia-devel kf6-kguiaddons-devel libkpipewire-devel freerdp-devel libwinpr3-devel libxkbcommon-devel libei-devel pam-devel libopenssl-devel openssl libpulse-devel libkscreen6-devel libkscreen6-plugin"
         fi
         echo ""
         read -r -p "Do you want to continue anyway? [y/N] " response
