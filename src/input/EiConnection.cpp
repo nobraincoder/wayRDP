@@ -91,7 +91,9 @@ EiConnection::~EiConnection()
         return;
     }
 
+#ifdef HAVE_LIBEI_DISCONNECT
     ei_disconnect(m_ei);
+#endif
     while (auto event = ei_get_event(m_ei)) {
         ei_event_unref(event);
     }
