@@ -73,8 +73,8 @@ sudo dnf install \
 sudo apt-get install \
     build-essential cmake extra-cmake-modules pkg-config \
     qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev \
-    libkpipewire-dev libfreerdp-server3-dev libfreerdp3-dev \
-    libwinpr3-dev libxkbcommon-dev libei-dev libpam0g-dev \
+    libkpipewire-dev freerdp3-dev libwinpr3-dev \
+    libxkbcommon-dev libei-dev libpam0g-dev \
     libssl-dev libpulse-dev libkscreen-dev va-driver-all
 ```
 

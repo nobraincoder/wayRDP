@@ -39,7 +39,7 @@ check_dependencies() {
         elif command -v dnf &>/dev/null; then
             echo "  Fedora:           sudo dnf install cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel kpipewire-devel freerdp-devel libxkbcommon-devel pam-devel openssl-devel pulseaudio-libs-devel libkscreen-devel"
         elif command -v apt-get &>/dev/null; then
-            echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev libfreerdp-server3-dev libfreerdp3-dev libwinpr3-dev libxkbcommon-dev libpam0g-dev libssl-dev libpulse-dev libkscreen-dev"
+            echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev freerdp3-dev libwinpr3-dev libxkbcommon-dev libpam0g-dev libssl-dev libpulse-dev libkscreen-dev"
         fi
         echo ""
         read -r -p "Do you want to continue anyway? [y/N] " response
