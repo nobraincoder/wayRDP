@@ -46,6 +46,9 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
 - **Core Services:** `pipewire`, `wireplumber`, `xdg-desktop-portal`, `xdg-desktop-portal-kde`, `kscreen-doctor`
 - **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon Mesa, or NVIDIA VA-API wrapper)
 
+> [!NOTE]
+> **Platform Testing:** `wayrdp` has currently been tested primarily on **Arch Linux** (KDE Plasma 6 / Wayland). Packages and instructions for Fedora, Ubuntu, and Debian are community-contributed; issue reports and verification for other distributions are welcome!
+
 <details>
 <summary><b>📦 Distribution Packages (Arch / Fedora / Ubuntu)</b></summary>
 
@@ -64,8 +67,8 @@ sudo dnf install \
     cmake extra-cmake-modules gcc-c++ pkgconfig \
     qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel \
     kpipewire-devel freerdp-devel libxkbcommon-devel \
-    libei-devel pam-devel openssl-devel pulseaudio-libs-devel \
-    libkscreen-devel libva-devel
+    libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel \
+    libkscreen-devel libkscreen libva-devel
 ```
 
 #### 3. Ubuntu 24.10+ / Debian Trixie (Plasma 6 & Qt6)
@@ -73,9 +76,9 @@ sudo dnf install \
 sudo apt-get install \
     build-essential cmake extra-cmake-modules pkg-config \
     qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev \
-    libkpipewire-dev libfreerdp-server3-dev libfreerdp3-dev \
-    libwinpr3-dev libxkbcommon-dev libei-dev libpam0g-dev \
-    libssl-dev libpulse-dev libkscreen-dev va-driver-all
+    libkpipewire-dev freerdp3-dev libwinpr3-dev \
+    libxkbcommon-dev libei-dev libpam0g-dev \
+    libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all
 ```
 
 </details>
