@@ -18,7 +18,7 @@ check_dependencies() {
     local missing=()
     echo "-> Checking build tools and dependencies..."
 
-    for cmd in cmake pkg-config gcc; do
+    for cmd in cmake pkg-config gcc openssl kscreen-doctor; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -37,9 +37,9 @@ check_dependencies() {
         if command -v pacman &>/dev/null; then
             echo "  Arch/EndeavourOS: sudo pacman -S --needed base-devel cmake extra-cmake-modules pkgconf qt6-base qt6-multimedia kguiaddons kpipewire freerdp libxkbcommon pam openssl libpulse libkscreen"
         elif command -v dnf &>/dev/null; then
-            echo "  Fedora:           sudo dnf install cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel kpipewire-devel freerdp-devel libxkbcommon-devel pam-devel openssl-devel pulseaudio-libs-devel libkscreen-devel"
+            echo "  Fedora:           sudo dnf install cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel kpipewire-devel freerdp-devel libxkbcommon-devel pam-devel openssl-devel openssl pulseaudio-libs-devel libkscreen-devel libkscreen"
         elif command -v apt-get &>/dev/null; then
-            echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev freerdp3-dev libwinpr3-dev libxkbcommon-dev libpam0g-dev libssl-dev libpulse-dev libkscreen-dev"
+            echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev freerdp3-dev libwinpr3-dev libxkbcommon-dev libpam0g-dev libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin"
         fi
         echo ""
         read -r -p "Do you want to continue anyway? [y/N] " response

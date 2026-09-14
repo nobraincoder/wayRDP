@@ -67,8 +67,8 @@ sudo dnf install \
     cmake extra-cmake-modules gcc-c++ pkgconfig \
     qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel \
     kpipewire-devel freerdp-devel libxkbcommon-devel \
-    libei-devel pam-devel openssl-devel pulseaudio-libs-devel \
-    libkscreen-devel libva-devel
+    libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel \
+    libkscreen-devel libkscreen libva-devel
 ```
 
 #### 3. Ubuntu 24.10+ / Debian Trixie (Plasma 6 & Qt6)
@@ -78,7 +78,7 @@ sudo apt-get install \
     qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev \
     libkpipewire-dev freerdp3-dev libwinpr3-dev \
     libxkbcommon-dev libei-dev libpam0g-dev \
-    libssl-dev libpulse-dev libkscreen-dev va-driver-all
+    libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all
 ```
 
 </details>
