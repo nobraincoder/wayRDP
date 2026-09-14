@@ -37,6 +37,14 @@ check_cxx_source_compiles("
     }
 " HAVE_LIBEI_TEXT)
 
+check_cxx_source_compiles("
+    #include <libei.h>
+    int main() {
+        ei_disconnect(nullptr);
+        return 0;
+    }
+" HAVE_LIBEI_DISCONNECT)
+
 set(CMAKE_REQUIRED_INCLUDES ${KPIPEWIRE_INCLUDE_DIR})
 set(CMAKE_REQUIRED_LIBRARIES KPipeWire Qt6::Core Qt6::Gui)
 check_cxx_source_compiles("
@@ -97,6 +105,10 @@ target_link_libraries(wayrdp PRIVATE
 
 if(HAVE_LIBEI_TEXT)
     target_compile_definitions(wayrdp PRIVATE HAVE_LIBEI_TEXT)
+endif()
+
+if(HAVE_LIBEI_DISCONNECT)
+    target_compile_definitions(wayrdp PRIVATE HAVE_LIBEI_DISCONNECT)
 endif()
 
 if(HAVE_KPIPEWIRE_COLOR_RANGE)

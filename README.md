@@ -66,7 +66,7 @@ sudo pacman -S --needed \
 sudo dnf install \
     cmake extra-cmake-modules gcc-c++ pkgconfig \
     qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel \
-    kpipewire-devel freerdp-devel libxkbcommon-devel \
+    kpipewire-devel freerdp-devel libwinpr-devel libxkbcommon-devel \
     libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel \
     libkscreen-devel libkscreen libva-devel
 ```
