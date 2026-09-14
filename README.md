@@ -46,6 +46,9 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
 - **Core Services:** `pipewire`, `wireplumber`, `xdg-desktop-portal`, `xdg-desktop-portal-kde`, `kscreen-doctor`
 - **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon Mesa, or NVIDIA VA-API wrapper)
 
+> [!NOTE]
+> **Platform Testing:** `wayrdp` has currently been tested primarily on **Arch Linux** (KDE Plasma 6 / Wayland). Packages and instructions for Fedora, Ubuntu, and Debian are community-contributed; issue reports and verification for other distributions are welcome!
+
 <details>
 <summary><b>📦 Distribution Packages (Arch / Fedora / Ubuntu)</b></summary>
 
