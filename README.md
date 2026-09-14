@@ -10,7 +10,7 @@ Unlike standard RDP implementations that simply mirror physical monitors, `wayrd
 
 ---
 
-## Key Features (Beyond KRdp)
+## Key Features
 
 While official KDE KRdp provides screen-sharing and mirroring of physical monitors, `wayrdp` is built specifically for headless virtual sessions with features not supported by KRdp:
 
