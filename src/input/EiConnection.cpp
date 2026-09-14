@@ -252,10 +252,15 @@ void EiConnection::sendKeyboardKeycode(int keycode, uint state)
 
 void EiConnection::sendKeyboardKeysym(int keysym, uint state)
 {
+#ifdef HAVE_LIBEI_TEXT
     if (!m_ei || !m_textDevice) return;
 
     ei_device_text_keysym(m_textDevice->device(), static_cast<uint32_t>(keysym), state == 1);
     ei_device_frame(m_textDevice->device(), ei_now(m_ei));
+#else
+    Q_UNUSED(keysym);
+    Q_UNUSED(state);
+#endif
 }
 
 void EiConnection::processEisEvents()
@@ -284,8 +289,11 @@ void EiConnection::processEisEvents()
                                       EI_DEVICE_CAP_BUTTON,
                                       EI_DEVICE_CAP_SCROLL,
                                       EI_DEVICE_CAP_KEYBOARD,
+#ifdef HAVE_LIBEI_TEXT
                                       EI_DEVICE_CAP_TEXT,
+#endif
                                       NULL);
+#ifdef HAVE_LIBEI_TEXT
             ei_seat_request_device_with_capabilities(seat,
                                                      EI_DEVICE_CAP_POINTER_ABSOLUTE,
                                                      EI_DEVICE_CAP_BUTTON,
@@ -293,6 +301,7 @@ void EiConnection::processEisEvents()
                                                      EI_DEVICE_CAP_KEYBOARD,
                                                      EI_DEVICE_CAP_TEXT,
                                                      NULL);
+#endif
             break;
         }
         case EI_EVENT_DEVICE_ADDED:
@@ -303,9 +312,11 @@ void EiConnection::processEisEvents()
             if (ei_device_has_capability(device, EI_DEVICE_CAP_KEYBOARD)) {
                 m_keyboardDevice = std::make_unique<EiDevice>(device);
             }
+#ifdef HAVE_LIBEI_TEXT
             if (ei_device_has_capability(device, EI_DEVICE_CAP_TEXT)) {
                 m_textDevice = std::make_unique<EiDevice>(device);
             }
+#endif
             ei_device_start_emulating(device, ei_now(m_ei));
             emit connected();
             break;

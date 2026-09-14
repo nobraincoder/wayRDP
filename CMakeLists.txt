@@ -24,6 +24,33 @@ pkg_check_modules(SPA REQUIRED IMPORTED_TARGET libspa-0.2)
 find_path(KPIPEWIRE_INCLUDE_DIR NAMES pipewirebaseencodedstream.h PATH_SUFFIXES KPipeWire)
 find_path(KF6GUIADDONS_INCLUDE_DIR NAMES KColorUtils PATH_SUFFIXES KF6/KGuiAddons)
 
+include(CheckCXXSourceCompiles)
+
+set(CMAKE_REQUIRED_INCLUDES ${LIBEI_INCLUDE_DIRS})
+set(CMAKE_REQUIRED_LIBRARIES PkgConfig::LIBEI)
+check_cxx_source_compiles("
+    #include <libei.h>
+    int main() {
+        int cap = EI_DEVICE_CAP_TEXT;
+        (void)cap;
+        return 0;
+    }
+" HAVE_LIBEI_TEXT)
+
+set(CMAKE_REQUIRED_INCLUDES ${KPIPEWIRE_INCLUDE_DIR})
+set(CMAKE_REQUIRED_LIBRARIES KPipeWire Qt6::Core Qt6::Gui)
+check_cxx_source_compiles("
+    #include <pipewirebaseencodedstream.h>
+    int main() {
+        PipeWireBaseEncodedStream::ColorRange r = PipeWireBaseEncodedStream::ColorRange::Full;
+        (void)r;
+        return 0;
+    }
+" HAVE_KPIPEWIRE_COLOR_RANGE)
+
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+
 # Add source files
 set(SOURCES
     src/core/main.cpp
@@ -67,5 +94,13 @@ target_link_libraries(wayrdp PRIVATE
     pulse-simple
     xkbcommon
 )
+
+if(HAVE_LIBEI_TEXT)
+    target_compile_definitions(wayrdp PRIVATE HAVE_LIBEI_TEXT)
+endif()
+
+if(HAVE_KPIPEWIRE_COLOR_RANGE)
+    target_compile_definitions(wayrdp PRIVATE HAVE_KPIPEWIRE_COLOR_RANGE)
+endif()
 
 install(TARGETS wayrdp DESTINATION bin)

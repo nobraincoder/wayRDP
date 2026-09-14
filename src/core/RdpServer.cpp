@@ -970,8 +970,12 @@ void RdpServer::sendVideoFrame(const QByteArray &data, bool isKeyFrame)
 static QByteArray createXorMask(const QImage &image)
 {
     auto converted = image.convertToFormat(QImage::Format_ARGB32);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     converted.flip(Qt::Vertical);
     converted.rgbSwap();
+#else
+    converted = converted.mirrored(false, true).rgbSwapped();
+#endif
     return QByteArray(reinterpret_cast<char *>(converted.bits()), converted.sizeInBytes());
 }
 
