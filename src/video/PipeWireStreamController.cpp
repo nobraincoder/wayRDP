@@ -143,7 +143,9 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
         qInfo() << "PipeWireStreamController: Using Speed encoding preference (async_depth=1 / zerolatency) to eliminate trailing frame ghosting";
     }
 
+#ifdef HAVE_KPIPEWIRE_COLOR_RANGE
     m_stream->setColorRange(PipeWireBaseEncodedStream::ColorRange::Full);
+#endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
     m_stream->setMaxPendingFrames(25);
