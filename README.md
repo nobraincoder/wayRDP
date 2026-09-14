@@ -50,7 +50,7 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
 > **Platform Testing & Compatibility:** `wayrdp` is designed for **KDE Plasma 6 on Wayland**. It is tested on **Arch Linux**, **Fedora 40/41+**, and **Debian 13 (Trixie)** / **Ubuntu 24.10+**.
 
 <details>
-<summary><b>📦 Supported Distributions & Packages (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
+<summary><b>Supported Distributions & Packages (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
 
 #### 1. Arch Linux / EndeavourOS / Manjaro / CachyOS / Garuda
 ```bash
@@ -94,7 +94,7 @@ sudo zypper install \
 </details>
 
 <details>
-<summary><b>❌ Unsupported Environments (What will NOT work)</b></summary>
+<summary><b>Unsupported Environments (Incompatible Systems)</b></summary>
 
 The following systems are fundamentally incompatible with `wayrdp`:
 
@@ -122,7 +122,7 @@ cd wayRDP
 The script automatically checks dependencies, compiles with Release optimizations, installs to `~/.local/bin/wayrdp`, configures `~/.config/systemd/user/wayrdp.service`, creates `~/.config/wayrdp.env`, and reloads systemd.
 
 <details>
-<summary><b>🛠️ Manual Build & Installation (CMake)</b></summary>
+<summary><b>Manual Build & Installation (CMake)</b></summary>
 
 ```bash
 mkdir -p build && cd build
