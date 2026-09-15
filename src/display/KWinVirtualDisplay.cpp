@@ -565,7 +565,7 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
         qInfo() << "Found virtual output:" << virtualOutputName << "(ID:" << virtualOutputId << ")"
                 << "Original primary output:" << m_originalPrimaryOutput;
 
-        // Find existing mode matching requested width and height
+        // Find existing mode matching requested width and height (exact or CVT 8-pixel horizontal alignment)
         QString matchedModeSpec;
         QJsonArray modes = virtualOutputObj.value("modes").toArray();
         for (const QJsonValue& mVal : modes) {
@@ -582,6 +582,26 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
             }
         }
 
+        // If no exact match, check for existing CVT 8-pixel aligned mode
+        if (matchedModeSpec.isEmpty()) {
+            for (const QJsonValue& mVal : modes) {
+                QJsonObject mObj = mVal.toObject();
+                QJsonObject sObj = mObj.value("size").toObject();
+                int w = sObj.value("width").toInt();
+                int h = sObj.value("height").toInt();
+                if (std::abs(w - m_requestedSize.width()) <= 8 && h == m_requestedSize.height()) {
+                    matchedModeSpec = mObj.value("id").toString();
+                    if (matchedModeSpec.isEmpty()) {
+                        matchedModeSpec = mObj.value("name").toString();
+                    }
+                    qInfo() << "Found existing CVT 8-pixel aligned mode:" << w << "x" << h
+                            << "(ID:" << matchedModeSpec << ") for requested" << m_requestedSize;
+                    m_requestedSize.setWidth(w);
+                    break;
+                }
+            }
+        }
+
         auto applySettings = [this, virtualOutputName, virtualOutputId, currentPrimaryOutputId, env](const QString &modeIdOrName) {
             // Use integer ID for kscreen-doctor arguments so dots in names like
             // "Virtual-virtual-xdp-kde-org.kde.krdpserver" are not split as command line sub-properties!
@@ -590,7 +610,7 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
             if (!modeIdOrName.isEmpty()) {
                 args << QString("output.%1.mode.%2").arg(targetOutputSpec).arg(modeIdOrName);
             } else {
-                args << QString("output.%1.mode.%2x%3@60").arg(targetOutputSpec).arg(m_requestedSize.width()).arg(m_requestedSize.height());
+                qWarning() << "No explicit mode ID available to apply; retaining existing mode and applying scale/priority";
             }
             args << QString("output.%1.scale.%2").arg(targetOutputSpec).arg(m_requestedScale);
             args << QString("output.%1.priority.1").arg(targetOutputSpec);
@@ -635,8 +655,11 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                         }
                     }
 
-                    // Verify whether the mode actually took effect
-                    if ((configuredWidth != m_requestedSize.width() || configuredHeight != m_requestedSize.height()) && m_resolutionRetryCount < 3) {
+                    // Verify whether the mode actually took effect (exact or within 8-pixel CVT alignment)
+                    bool modeMatches = (configuredWidth == m_requestedSize.width() || std::abs(configuredWidth - m_requestedSize.width()) <= 8) &&
+                                       (configuredHeight == m_requestedSize.height());
+
+                    if (!modeMatches && m_resolutionRetryCount < 3) {
                         m_resolutionRetryCount++;
                         qWarning() << "Virtual display mode not yet applied by KWin (currently" << configuredWidth << "x" << configuredHeight
                                    << ", requested" << m_requestedSize << "). Retrying in 250ms (attempt" << m_resolutionRetryCount << "/3)...";
@@ -645,6 +668,17 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                     }
 
                     m_resolutionRetryCount = 0;
+
+                    // Synchronize m_requestedSize to the actual active compositor output size so
+                    // PipeWire and FreeRDP stay 100% in agreement even if KWin fell back to an existing mode.
+                    if (configuredWidth > 0 && configuredHeight > 0) {
+                        if (configuredWidth != m_requestedSize.width() || configuredHeight != m_requestedSize.height()) {
+                            qInfo() << "Synchronizing virtual display target size from" << m_requestedSize
+                                    << "to active compositor size:" << configuredWidth << "x" << configuredHeight;
+                            m_requestedSize = QSize(configuredWidth, configuredHeight);
+                        }
+                    }
+
                     if (!m_streamOpened) {
                         // Give KWin Wayland compositor 250ms to finish reallocating screencast buffer pool
                         QTimer::singleShot(250, this, &KWinVirtualDisplay::openPipeWireRemote);
@@ -656,16 +690,19 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
         };
 
         if (matchedModeSpec.isEmpty()) {
+            // VESA CVT timings require horizontal resolution to be a multiple of 8 (e.g. 2732 -> 2728, 1364 -> 1360)
+            int cvtWidth = (m_requestedSize.width() / 8) * 8;
             QString targetOutputSpec = QString::number(virtualOutputId);
-            qInfo() << "Mode" << m_requestedSize << "does not exist on output ID" << targetOutputSpec << ", adding custom mode...";
+            qInfo() << "Mode" << m_requestedSize << "does not exist on output ID" << targetOutputSpec
+                    << "(requesting CVT 8-pixel aligned width:" << cvtWidth << "), adding custom mode...";
             QProcess* addModeProc = new QProcess(this);
             addModeProc->setProcessEnvironment(env);
             QStringList addArgs;
             addArgs << QString("output.%1.addCustomMode.%2.%3.60000.reduced")
-                       .arg(targetOutputSpec).arg(m_requestedSize.width()).arg(m_requestedSize.height());
+                       .arg(targetOutputSpec).arg(cvtWidth).arg(m_requestedSize.height());
             qInfo() << "Running: kscreen-doctor" << addArgs.join(" ");
             addModeProc->start("kscreen-doctor", addArgs);
-            connect(addModeProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, addModeProc, applySettings, virtualOutputName, env](int exitCode, QProcess::ExitStatus) {
+            connect(addModeProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, addModeProc, applySettings, virtualOutputName, env, cvtWidth](int exitCode, QProcess::ExitStatus) {
                 QString out = QString::fromUtf8(addModeProc->readAllStandardOutput()).trimmed();
                 QString err = QString::fromUtf8(addModeProc->readAllStandardError()).trimmed();
                 qInfo() << "addModeProc (kscreen-doctor addCustomMode) finished with code:" << exitCode;
@@ -677,7 +714,7 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                 QProcess* recheckProc = new QProcess(this);
                 recheckProc->setProcessEnvironment(env);
                 recheckProc->start("kscreen-doctor", QStringList() << "-j");
-                connect(recheckProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, recheckProc, applySettings, virtualOutputName](int, QProcess::ExitStatus) {
+                connect(recheckProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, recheckProc, applySettings, virtualOutputName, cvtWidth](int, QProcess::ExitStatus) {
                     QString newModeId;
                     QJsonDocument doc = QJsonDocument::fromJson(recheckProc->readAllStandardOutput());
                     recheckProc->deleteLater();
@@ -688,9 +725,15 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                                 for (const QJsonValue& mVal : obj.value("modes").toArray()) {
                                     QJsonObject mObj = mVal.toObject();
                                     QJsonObject sObj = mObj.value("size").toObject();
-                                    if (sObj.value("width").toInt() == m_requestedSize.width() &&
-                                        sObj.value("height").toInt() == m_requestedSize.height()) {
+                                    int w = sObj.value("width").toInt();
+                                    int h = sObj.value("height").toInt();
+                                    if ((w == m_requestedSize.width() || w == cvtWidth || std::abs(w - m_requestedSize.width()) <= 8) &&
+                                        h == m_requestedSize.height()) {
                                         newModeId = mObj.value("id").toString();
+                                        if (newModeId.isEmpty()) {
+                                            newModeId = mObj.value("name").toString();
+                                        }
+                                        m_requestedSize.setWidth(w);
                                         break;
                                     }
                                 }
@@ -778,7 +821,8 @@ void KWinVirtualDisplay::changeResolution(const QSize &newSize, double scale)
     if (!m_displayActive || newSize.isEmpty())
         return;
 
-    bool sizeChanged = (newSize != m_requestedSize);
+    bool sizeChanged = (newSize != m_requestedSize &&
+                        !(std::abs(newSize.width() - m_requestedSize.width()) <= 8 && newSize.height() == m_requestedSize.height()));
     bool scaleChanged = (scale > 0.0 && std::abs(scale - m_requestedScale) > 0.01);
 
     if (!sizeChanged && !scaleChanged)
