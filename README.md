@@ -47,12 +47,12 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
 - **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon Mesa, or NVIDIA VA-API wrapper)
 
 > [!NOTE]
-> **Platform Testing & Compatibility:** `wayrdp` is designed for **KDE Plasma 6 on Wayland**. It is tested on **Arch Linux**, **Fedora 40/41+**, and **Debian 13 (Trixie)** / **Ubuntu 24.10+**.
+> **Platform Testing & Compatibility:** `wayrdp` is designed for **KDE Plasma 6 on Wayland**. It is **actively tested on Arch Linux**, and **verified to compile on Debian 13 (Trixie) and Fedora 40/41+**.
 
 <details>
-<summary><b>Supported Distributions & Packages (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
+<summary><b>Distribution Packages & Build Instructions (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
 
-#### 1. Arch Linux / EndeavourOS / Manjaro / CachyOS / Garuda
+#### 1. Arch Linux / EndeavourOS / Manjaro (Actively Tested)
 ```bash
 sudo pacman -S --needed \
     base-devel cmake extra-cmake-modules pkgconf \
@@ -61,7 +61,7 @@ sudo pacman -S --needed \
     libpulse libkscreen libva libva-utils
 ```
 
-#### 2. Fedora 40 / 41+ (Workstation / KDE Spin / Kinoite / Nobara)
+#### 2. Fedora 40 / 41+ (Verified Compilation)
 ```bash
 sudo dnf install \
     cmake extra-cmake-modules gcc-c++ pkgconfig \
@@ -71,7 +71,7 @@ sudo dnf install \
     libkscreen-devel libkscreen libva-devel
 ```
 
-#### 3. Debian 13 (Trixie) / Debian Sid / Ubuntu 24.10+ / Kubuntu 24.10+ / KDE neon
+#### 3. Debian 13 (Trixie) / Ubuntu 24.10+ (Verified Compilation)
 ```bash
 sudo apt-get install \
     build-essential cmake extra-cmake-modules pkg-config \
@@ -81,7 +81,7 @@ sudo apt-get install \
     libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all
 ```
 
-#### 4. openSUSE Tumbleweed & Slowroll
+#### 4. openSUSE Tumbleweed & Slowroll (Package Reference)
 ```bash
 sudo zypper install \
     cmake extra-cmake-modules gcc-c++ pkg-config \
@@ -265,10 +265,19 @@ Because FreeRDP on Linux uses standard TLS encryption without CredSSP/NLA, Windo
    ```
    Then connect normally via `mstsc.exe <HOST_IP>:3390`.
 
-### macOS (Windows App / Microsoft Remote Desktop)
+### macOS & iOS / iPadOS (Windows App / Microsoft Remote Desktop)
 1. Add PC $\rightarrow$ PC Name: `<HOST_IP>:3390`.
 2. User Account: Enter your Linux username and password.
-3. Display: Enable "Optimize for Retina display" for native high-DPI scaling.
+3. Display: Enable native resolution / Retina display for crisp scaling.
+
+### Android (`aFreeRDP`)
+On Android devices, connect using **[aFreeRDP](https://play.google.com/store/apps/details?id=com.freerdp.afreerdp)** (official FreeRDP client):
+1. Server: `<HOST_IP>:3390`.
+2. User Account: Enter your Linux username and password.
+3. Advanced Settings: Ensure H.264 / AVC graphics pipeline is active.
+
+> [!NOTE]
+> Microsoft's official "Windows App" / RD Client on Android disables H.264 (`AVC_DISABLED`) and does not support video streaming. Use **aFreeRDP** on Android for zero-copy hardware-accelerated H.264 streaming.
 
 ### Linux (`xfreerdp`)
 ```bash
