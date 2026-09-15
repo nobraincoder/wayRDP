@@ -414,40 +414,68 @@ UINT RdpGfxChannel::capsAdvertiseCallback(RdpgfxServerContext* context, const RD
 
     UINT32 selectedVersion = 0;
     UINT32 selectedFlags = 0;
-    bool has107 = false;
-    bool has104 = false;
-    UINT32 flags107 = 0;
-    UINT32 flags104 = 0;
+    int bestPriority = -1;
 
     for (UINT16 i = 0; i < capsAdvertise->capsSetCount; i++) {
         const RDPGFX_CAPSET* capsSet = &capsAdvertise->capsSets[i];
+        
+        qInfo() << "RdpGfxChannel: Client advertised capSet[" << i << "] version:"
+                << QString("0x%1").arg(capsSet->version, 8, 16, QChar('0'))
+                << "flags:" << QString("0x%1").arg(capsSet->flags, 8, 16, QChar('0'));
+
         if (capsSet->flags & RDPGFX_CAPS_FLAG_AVC_DISABLED) {
             continue;
         }
 
-        if (capsSet->version == RDPGFX_CAPVERSION_107) {
-            has107 = true;
-            flags107 = capsSet->flags;
-        } else if (capsSet->version == RDPGFX_CAPVERSION_104) {
-            has104 = true;
-            flags104 = capsSet->flags;
-        } else if (selectedVersion == 0 && capsSet->version <= RDPGFX_CAPVERSION_107) {
+        int priority = -1;
+        switch (capsSet->version) {
+            case RDPGFX_CAPVERSION_107:
+                priority = 1007;
+                break;
+            case RDPGFX_CAPVERSION_106:
+            case RDPGFX_CAPVERSION_106_ERR:
+                priority = 1006;
+                break;
+            case RDPGFX_CAPVERSION_105:
+                priority = 1005;
+                break;
+            case RDPGFX_CAPVERSION_104:
+                priority = 1004;
+                break;
+            case RDPGFX_CAPVERSION_103:
+                priority = 1003;
+                break;
+            case RDPGFX_CAPVERSION_102:
+                priority = 1002;
+                break;
+            case RDPGFX_CAPVERSION_101:
+                priority = 1001;
+                break;
+            case RDPGFX_CAPVERSION_10:
+                priority = 1000;
+                break;
+            case RDPGFX_CAPVERSION_81:
+                if (capsSet->flags & RDPGFX_CAPS_FLAG_AVC420_ENABLED) {
+                    priority = 810;
+                }
+                break;
+            default:
+                break;
+        }
+
+        if (priority > bestPriority) {
+            bestPriority = priority;
             selectedVersion = capsSet->version;
             selectedFlags = capsSet->flags;
         }
     }
 
-    if (has107) {
-        selectedVersion = RDPGFX_CAPVERSION_107;
-        selectedFlags = flags107;
-    } else if (has104) {
-        selectedVersion = RDPGFX_CAPVERSION_104;
-        selectedFlags = flags104;
-    }
-
-    if (selectedVersion == 0 && capsAdvertise->capsSetCount > 0) {
-        selectedVersion = capsAdvertise->capsSets[0].version;
-        selectedFlags = capsAdvertise->capsSets[0].flags;
+    if (selectedVersion == 0) {
+        qWarning() << "RdpGfxChannel: Client does not support any AVC420 / H.264 profile!";
+        if (capsAdvertise->capsSetCount > 0) {
+            selectedVersion = capsAdvertise->capsSets[0].version;
+            selectedFlags = capsAdvertise->capsSets[0].flags;
+        }
     }
 
     RDPGFX_CAPS_CONFIRM_PDU confirm;

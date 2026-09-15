@@ -182,13 +182,27 @@ void PipeWireStreamController::onStreamStopped()
     m_currentStreamResolution = QSize();
 }
 
+static bool isResolutionMatching(const QSize &actual, const QSize &target)
+{
+    if (target.isEmpty() || actual == target) {
+        return true;
+    }
+    // Allow horizontal 8-pixel CVT alignment difference
+    return std::abs(actual.width() - target.width()) <= 8 && actual.height() == target.height();
+}
+
 void PipeWireStreamController::onStreamSizeChanged(const QSize &size)
 {
     qInfo() << "PipeWireStreamController: Stream size changed to" << size
             << "(target resolution is:" << m_targetResolution << ")";
     m_currentStreamResolution = size;
 
-    if (m_targetResolution.isEmpty() || size == m_targetResolution) {
+    if (isResolutionMatching(size, m_targetResolution)) {
+        if (!m_targetResolution.isEmpty() && size != m_targetResolution) {
+            qInfo() << "PipeWireStreamController: Accepting CVT-aligned stream size" << size
+                    << "(target resolution was" << m_targetResolution << ")";
+            m_targetResolution = size;
+        }
         emit streamSizeChanged(size);
     } else {
         qWarning() << "PipeWireStreamController: Stream size" << size
@@ -200,7 +214,7 @@ void PipeWireStreamController::onStreamSizeChanged(const QSize &size)
 void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &packet)
 {
     static int mismatchDropCount = 0;
-    if (!m_targetResolution.isEmpty() && !m_currentStreamResolution.isEmpty() && m_currentStreamResolution != m_targetResolution) {
+    if (!m_targetResolution.isEmpty() && !m_currentStreamResolution.isEmpty() && !isResolutionMatching(m_currentStreamResolution, m_targetResolution)) {
         if (mismatchDropCount++ < 15) {
             // Discard transitional packets for up to 15 frames (~250ms) while compositor changes mode
             return;
