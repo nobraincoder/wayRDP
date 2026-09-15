@@ -47,12 +47,12 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
 - **Hardware Acceleration:** GPU supporting VA-API H.264 encoding (Intel QuickSync, AMD Radeon Mesa, or NVIDIA VA-API wrapper)
 
 > [!NOTE]
-> **Platform Testing & Compatibility:** `wayrdp` is designed for **KDE Plasma 6 on Wayland**. It is tested on **Arch Linux**, **Fedora 40/41+**, and **Debian 13 (Trixie)** / **Ubuntu 24.10+**.
+> **Platform Testing & Compatibility:** `wayrdp` is designed for **KDE Plasma 6 on Wayland**. It is **actively tested on Arch Linux**, and **verified to compile on Debian 13 (Trixie) and Fedora 40/41+**.
 
 <details>
-<summary><b>Supported Distributions & Packages (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
+<summary><b>Distribution Packages & Build Instructions (Arch / Fedora / Debian / Ubuntu / openSUSE)</b></summary>
 
-#### 1. Arch Linux / EndeavourOS / Manjaro / CachyOS / Garuda
+#### 1. Arch Linux / EndeavourOS / Manjaro (Actively Tested)
 ```bash
 sudo pacman -S --needed \
     base-devel cmake extra-cmake-modules pkgconf \
@@ -61,7 +61,7 @@ sudo pacman -S --needed \
     libpulse libkscreen libva libva-utils
 ```
 
-#### 2. Fedora 40 / 41+ (Workstation / KDE Spin / Kinoite / Nobara)
+#### 2. Fedora 40 / 41+ (Verified Compilation)
 ```bash
 sudo dnf install \
     cmake extra-cmake-modules gcc-c++ pkgconfig \
@@ -71,7 +71,7 @@ sudo dnf install \
     libkscreen-devel libkscreen libva-devel
 ```
 
-#### 3. Debian 13 (Trixie) / Debian Sid / Ubuntu 24.10+ / Kubuntu 24.10+ / KDE neon
+#### 3. Debian 13 (Trixie) / Ubuntu 24.10+ (Verified Compilation)
 ```bash
 sudo apt-get install \
     build-essential cmake extra-cmake-modules pkg-config \
@@ -81,7 +81,7 @@ sudo apt-get install \
     libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all
 ```
 
-#### 4. openSUSE Tumbleweed & Slowroll
+#### 4. openSUSE Tumbleweed & Slowroll (Package Reference)
 ```bash
 sudo zypper install \
     cmake extra-cmake-modules gcc-c++ pkg-config \
@@ -222,15 +222,6 @@ RDP_LOCK_ON_DISCONNECT=1
 
 ---
 
-## Known Limitations
-
-- **Microsoft RDP Protocol Constraints:** Microsoft RDP specifications ([MS-RDPEGFX]) strictly require H.264 (`AVC420` / `AVC444`) for official client applications (Windows `mstsc.exe`, macOS Microsoft Remote Desktop, iOS/Android apps). Modern codecs like AV1 or HEVC (H.265) are not supported by Microsoft RDP specifications.
-- **KDE Plasma 6 Wayland Exclusivity:** Engineered specifically around KWin Wayland, `xdg-desktop-portal-kde`, and `libei`. Traditional X11 sessions, GNOME Mutter, and generic wlroots compositors are outside the scope of this architecture.
-- **Personal Workstation Model:** Designed for single-user workstation remote access rather than multi-tenant or concurrent multi-seat enterprise terminal server hosting.
-- **Hardware Silicon Limits at 4K / Retina:** At 4K or high-DPI Retina (2x scaling) resolutions, stream throughput is physically bounded by the host GPU's hardware video encoder (VPU). Older integrated GPUs (such as Intel Gen 9 Skylake / HD Graphics 520) cap throughput at 25–35 FPS under 4K workloads due to fixed-function silicon limits, whereas 1080p and 1440p run at a continuous 60 FPS.
-
----
-
 ## Managing the Service
 
 Use standard `systemctl --user` commands:
@@ -265,10 +256,10 @@ Because FreeRDP on Linux uses standard TLS encryption without CredSSP/NLA, Windo
    ```
    Then connect normally via `mstsc.exe <HOST_IP>:3390`.
 
-### macOS (Windows App / Microsoft Remote Desktop)
-1. Add PC $\rightarrow$ PC Name: `<HOST_IP>:3390`.
+### macOS & iOS / iPadOS (Windows App / Microsoft Remote Desktop)
+1. Add PC → PC Name: `<HOST_IP>:3390`.
 2. User Account: Enter your Linux username and password.
-3. Display: Enable "Optimize for Retina display" for native high-DPI scaling.
+3. Display: Enable native resolution / Retina display for crisp scaling.
 
 ### Linux (`xfreerdp`)
 ```bash
@@ -301,7 +292,7 @@ Also verify that `kwin_wayland` is your active compositor (`echo $XDG_SESSION_TY
 <summary><b>3. Buffer Starvation (Failed receiving filtered frame: Cannot allocate memory)</b></summary>
 
 - **Symptom:** During rapid client window resizing or bursty 60 FPS motion, the server log displays `Failed receiving filtered frame: Cannot allocate memory` and the video stream freezes or drops frames.
-- **Root Cause:** When `maxPendingFrames` is configured too low (e.g. $\le 4$), VA-API's internal GPU surface pool is exhausted during dynamic resolution changes before the client acknowledges preceding frames.
+- **Root Cause:** When `maxPendingFrames` is configured too low (e.g. ≤ 4), VA-API's internal GPU surface pool is exhausted during dynamic resolution changes before the client acknowledges preceding frames.
 - **Fix:** `wayrdp` allocates a bounded queue of **25 pending frames** (`m_stream->setMaxPendingFrames(25)`). This guarantees sufficient buffer headroom for the hardware encoder pipeline without introducing measurable latency.
 
 </details>
@@ -360,6 +351,16 @@ Environment=KPIPEWIRE_FORCE_ENCODER=h264_vaapi
 This is included by default in the provided `wayrdp.service` unit.
 
 </details>
+
+---
+
+## Known Limitations
+
+- **Microsoft Windows App on Android Incompatibility:** The official Microsoft "Windows App" (formerly Microsoft Remote Desktop) on Android explicitly disables H.264 video decoding (`RDPGFX_CAPS_FLAG_AVC_DISABLED`) across all capability sets and only supports legacy bitmap/GDI codecs. Because `wayrdp` operates exclusively on a zero-copy hardware-accelerated video streaming pipeline (`[MS-RDPEGFX]`), the Microsoft client on Android is currently incompatible.
+- **Microsoft RDP Protocol Constraints:** Microsoft RDP specifications ([MS-RDPEGFX]) require H.264 (`AVC420` / `AVC444`) for official client applications (Windows `mstsc.exe`, macOS Microsoft Remote Desktop / Windows App, iOS/iPadOS). Modern codecs like AV1 or HEVC (H.265) are not supported by Microsoft RDP specifications.
+- **KDE Plasma 6 Wayland Exclusivity:** Engineered specifically around KWin Wayland, `xdg-desktop-portal-kde`, and `libei`. Traditional X11 sessions, GNOME Mutter, and generic wlroots compositors are outside the scope of this architecture.
+- **Personal Workstation Model:** Designed for single-user workstation remote access rather than multi-tenant or concurrent multi-seat enterprise terminal server hosting.
+- **Hardware Silicon Limits at 4K / Retina:** At 4K or high-DPI Retina (2x scaling) resolutions, stream throughput is physically bounded by the host GPU's hardware video encoder (VPU). Older integrated GPUs (such as Intel Gen 9 Skylake / HD Graphics 520) cap throughput at 25–35 FPS under 4K workloads due to fixed-function silicon limits, whereas 1080p and 1440p run at a continuous 60 FPS.
 
 ---
 
