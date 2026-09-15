@@ -222,15 +222,6 @@ RDP_LOCK_ON_DISCONNECT=1
 
 ---
 
-## Known Limitations
-
-- **Microsoft RDP Protocol Constraints:** Microsoft RDP specifications ([MS-RDPEGFX]) strictly require H.264 (`AVC420` / `AVC444`) for official client applications (Windows `mstsc.exe`, macOS Microsoft Remote Desktop, iOS/Android apps). Modern codecs like AV1 or HEVC (H.265) are not supported by Microsoft RDP specifications.
-- **KDE Plasma 6 Wayland Exclusivity:** Engineered specifically around KWin Wayland, `xdg-desktop-portal-kde`, and `libei`. Traditional X11 sessions, GNOME Mutter, and generic wlroots compositors are outside the scope of this architecture.
-- **Personal Workstation Model:** Designed for single-user workstation remote access rather than multi-tenant or concurrent multi-seat enterprise terminal server hosting.
-- **Hardware Silicon Limits at 4K / Retina:** At 4K or high-DPI Retina (2x scaling) resolutions, stream throughput is physically bounded by the host GPU's hardware video encoder (VPU). Older integrated GPUs (such as Intel Gen 9 Skylake / HD Graphics 520) cap throughput at 25–35 FPS under 4K workloads due to fixed-function silicon limits, whereas 1080p and 1440p run at a continuous 60 FPS.
-
----
-
 ## Managing the Service
 
 Use standard `systemctl --user` commands:
@@ -266,18 +257,9 @@ Because FreeRDP on Linux uses standard TLS encryption without CredSSP/NLA, Windo
    Then connect normally via `mstsc.exe <HOST_IP>:3390`.
 
 ### macOS & iOS / iPadOS (Windows App / Microsoft Remote Desktop)
-1. Add PC $\rightarrow$ PC Name: `<HOST_IP>:3390`.
+1. Add PC → PC Name: `<HOST_IP>:3390`.
 2. User Account: Enter your Linux username and password.
 3. Display: Enable native resolution / Retina display for crisp scaling.
-
-### Android (`aFreeRDP`)
-On Android devices, connect using **[aFreeRDP](https://play.google.com/store/apps/details?id=com.freerdp.afreerdp)** (official FreeRDP client):
-1. Server: `<HOST_IP>:3390`.
-2. User Account: Enter your Linux username and password.
-3. Advanced Settings: Ensure H.264 / AVC graphics pipeline is active.
-
-> [!NOTE]
-> Microsoft's official "Windows App" / RD Client on Android disables H.264 (`AVC_DISABLED`) and does not support video streaming. Use **aFreeRDP** on Android for zero-copy hardware-accelerated H.264 streaming.
 
 ### Linux (`xfreerdp`)
 ```bash
@@ -310,7 +292,7 @@ Also verify that `kwin_wayland` is your active compositor (`echo $XDG_SESSION_TY
 <summary><b>3. Buffer Starvation (Failed receiving filtered frame: Cannot allocate memory)</b></summary>
 
 - **Symptom:** During rapid client window resizing or bursty 60 FPS motion, the server log displays `Failed receiving filtered frame: Cannot allocate memory` and the video stream freezes or drops frames.
-- **Root Cause:** When `maxPendingFrames` is configured too low (e.g. $\le 4$), VA-API's internal GPU surface pool is exhausted during dynamic resolution changes before the client acknowledges preceding frames.
+- **Root Cause:** When `maxPendingFrames` is configured too low (e.g. ≤ 4), VA-API's internal GPU surface pool is exhausted during dynamic resolution changes before the client acknowledges preceding frames.
 - **Fix:** `wayrdp` allocates a bounded queue of **25 pending frames** (`m_stream->setMaxPendingFrames(25)`). This guarantees sufficient buffer headroom for the hardware encoder pipeline without introducing measurable latency.
 
 </details>
@@ -369,6 +351,16 @@ Environment=KPIPEWIRE_FORCE_ENCODER=h264_vaapi
 This is included by default in the provided `wayrdp.service` unit.
 
 </details>
+
+---
+
+## Known Limitations
+
+- **Microsoft Windows App on Android Incompatibility:** The official Microsoft "Windows App" (formerly Microsoft Remote Desktop) on Android explicitly disables H.264 video decoding (`RDPGFX_CAPS_FLAG_AVC_DISABLED`) across all capability sets and only supports legacy bitmap/GDI codecs. Because `wayrdp` operates exclusively on a zero-copy hardware-accelerated video streaming pipeline (`[MS-RDPEGFX]`), the Microsoft client on Android is currently incompatible.
+- **Microsoft RDP Protocol Constraints:** Microsoft RDP specifications ([MS-RDPEGFX]) require H.264 (`AVC420` / `AVC444`) for official client applications (Windows `mstsc.exe`, macOS Microsoft Remote Desktop / Windows App, iOS/iPadOS). Modern codecs like AV1 or HEVC (H.265) are not supported by Microsoft RDP specifications.
+- **KDE Plasma 6 Wayland Exclusivity:** Engineered specifically around KWin Wayland, `xdg-desktop-portal-kde`, and `libei`. Traditional X11 sessions, GNOME Mutter, and generic wlroots compositors are outside the scope of this architecture.
+- **Personal Workstation Model:** Designed for single-user workstation remote access rather than multi-tenant or concurrent multi-seat enterprise terminal server hosting.
+- **Hardware Silicon Limits at 4K / Retina:** At 4K or high-DPI Retina (2x scaling) resolutions, stream throughput is physically bounded by the host GPU's hardware video encoder (VPU). Older integrated GPUs (such as Intel Gen 9 Skylake / HD Graphics 520) cap throughput at 25–35 FPS under 4K workloads due to fixed-function silicon limits, whereas 1080p and 1440p run at a continuous 60 FPS.
 
 ---
 
