@@ -1107,6 +1107,9 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     bool authenticated = server->authenticateUser(username, password);
     if (!authenticated) {
         qWarning() << "Authentication failed in PostConnect for user:" << username;
+        if (peer->context && peer->context->rdp) {
+            freerdp_set_error_info(peer->context->rdp, ERRINFO_SERVER_FRESH_CREDENTIALS_REQUIRED);
+        }
         return FALSE;
     }
 
