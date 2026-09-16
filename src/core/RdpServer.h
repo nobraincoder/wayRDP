@@ -39,6 +39,7 @@ struct MyPeerContext {
     DispServerContext* disp;
     bool dispOpened;
     bool activated;
+    bool authenticated{false};
 };
 
 class RdpServer : public QObject
@@ -116,7 +117,10 @@ private:
     static void rdpsnd_activated(RdpsndServerContext* context);
 
     void generateCertificate();
+    void setupSamDatabase();
+    void cleanupSamDatabase();
 
+    QString m_samFilePath;
     freerdp_listener* m_listener;
     HANDLE m_listenerThread;
     bool m_running;

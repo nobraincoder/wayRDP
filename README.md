@@ -173,6 +173,8 @@ If you want your remote RDP session to diverge from your local KDE desktop setti
 RDP_PORT=3390
 
 # Fixed RDP password authentication.
+# Strongly recommended for Windows mstsc.exe clients: automatically enables native
+# Network Level Authentication (NLA) with Windows Security credential prompts.
 # Leave commented out to authenticate using your standard system PAM Linux user credentials.
 # RDP_PASSWORD=your_secure_password
 
@@ -242,19 +244,14 @@ Use standard `systemctl --user` commands:
 Connect to your host machine's IP on port **3390** (e.g. `192.168.1.100:3390`):
 
 ### Windows (Remote Desktop Connection / `mstsc.exe`)
-Because FreeRDP on Linux uses standard TLS encryption without CredSSP/NLA, Windows `mstsc.exe` does not show a login prompt by default unless prompted:
+When `RDP_PASSWORD` is configured in `~/.config/wayrdp.env`, `wayrdp` automatically enables **Network Level Authentication (NLA)**. Windows `mstsc.exe` will seamlessly display the native Windows Security credentials prompt upon connection:
 
-1. **Option A (Recommended):** Press `Win + R` and run:
-   ```cmd
-   mstsc /v:<HOST_IP>:3390 /prompt
-   ```
-   This tells Windows to display the Windows Security prompt to enter your Linux username and password.
+1. Open Remote Desktop Connection (`mstsc.exe`).
+2. Enter `<HOST_IP>:3390` and click **Connect**.
+3. When prompted by Windows Security, enter your username and `RDP_PASSWORD`.
 
-2. **Option B (Save credentials in Windows Credential Manager):**
-   ```cmd
-   cmdkey /generic:TERMSRV/<HOST_IP>:3390 /user:<USER> /pass:<PASSWORD>
-   ```
-   Then connect normally via `mstsc.exe <HOST_IP>:3390`.
+> [!TIP]
+> If `RDP_PASSWORD` is left commented out, `wayrdp` falls back to Linux PAM authentication via TLS. In PAM mode, if your Windows client does not prompt for credentials locally, pass `/prompt` (`mstsc /v:<HOST_IP>:3390 /prompt`) or enter your username in "Show Options".
 
 ### macOS & iOS / iPadOS (Windows App / Microsoft Remote Desktop)
 1. Add PC → PC Name: `<HOST_IP>:3390`.

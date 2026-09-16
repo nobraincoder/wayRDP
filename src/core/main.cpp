@@ -4,6 +4,8 @@
 #include <QUrl>
 #include <KSystemClipboard>
 #include <QFile>
+#include <QDir>
+#include <QTextStream>
 #include <QDebug>
 #include <QDBusInterface>
 #include <QDBusReply>
@@ -53,8 +55,50 @@ static void ensurePermissionsAuthorized()
     }
 }
 
+static void loadEnvironmentConfig()
+{
+    QString configPath = QDir::homePath() + "/.config/wayrdp.env";
+    if (!QFile::exists(configPath)) {
+        QString legacyPath = QDir::homePath() + "/.config/kde-virtual-rdp.env";
+        if (QFile::exists(legacyPath)) {
+            configPath = legacyPath;
+        }
+    }
+
+    if (!QFile::exists(configPath)) {
+        return;
+    }
+
+    QFile file(configPath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+
+    qInfo() << "Loading environment configuration from:" << configPath;
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith('#')) {
+            continue;
+        }
+        int eq = line.indexOf('=');
+        if (eq > 0) {
+            QString key = line.left(eq).trimmed();
+            QString val = line.mid(eq + 1).trimmed();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith('\'') && val.endsWith('\''))) {
+                val = val.mid(1, val.length() - 2);
+            }
+            if (qEnvironmentVariableIsEmpty(key.toUtf8().constData())) {
+                qputenv(key.toUtf8().constData(), val.toUtf8());
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
+    loadEnvironmentConfig();
+
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
         QString waylandSocket = QString("/run/user/%1/wayland-0").arg(getuid());
         if (QFile::exists(waylandSocket)) {

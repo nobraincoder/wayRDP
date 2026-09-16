@@ -26,6 +26,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <linux/input-event-codes.h>
 #include <security/pam_appl.h>
+#include <winpr/ntlm.h>
+#include <QTextStream>
 
 struct PamUserData {
     QByteArray username;
@@ -127,6 +129,9 @@ bool RdpServer::authenticateUser(const QString& username, const QString& passwor
 
     if (password.isEmpty()) {
         qWarning() << "Empty password provided, rejecting authentication for user:" << username;
+        if (envPassword.isEmpty()) {
+            qInfo() << "Notice: For Windows mstsc client compatibility, set RDP_PASSWORD in ~/.config/wayrdp.env to enable native Network Level Authentication (NLA).";
+        }
         return false;
     }
 
@@ -167,6 +172,83 @@ bool RdpServer::authenticateUser(const QString& username, const QString& passwor
     return success;
 }
 
+void RdpServer::setupSamDatabase()
+{
+    cleanupSamDatabase();
+
+    QString rdpPassword = qEnvironmentVariable("RDP_PASSWORD");
+    if (rdpPassword.isEmpty() || qEnvironmentVariable("RDP_NO_AUTH") == "1") {
+        return;
+    }
+
+    QString runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (runtimeDir.isEmpty()) {
+        runtimeDir = QString("/run/user/%1").arg(getuid());
+    }
+    QDir().mkpath(runtimeDir + "/wayrdp");
+
+    m_samFilePath = runtimeDir + "/wayrdp/sam";
+    QFile samFile(m_samFilePath);
+    if (!samFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "Failed to open SAM database file for writing:" << m_samFilePath;
+        m_samFilePath.clear();
+        return;
+    }
+
+    samFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+
+    QByteArray passBytes = rdpPassword.toUtf8();
+    BYTE hash[16] = {0};
+    if (!NTOWFv1A(passBytes.constData(), passBytes.length(), hash)) {
+        qWarning() << "NTOWFv1A failed to compute NTLM hash";
+        samFile.close();
+        samFile.remove();
+        m_samFilePath.clear();
+        return;
+    }
+
+    QString hexHash;
+    for (int i = 0; i < 16; ++i) {
+        hexHash.append(QString::asprintf("%02x", hash[i]));
+    }
+
+    QStringList users;
+    QString localUser = qEnvironmentVariable("USER");
+    if (localUser.isEmpty()) localUser = qEnvironmentVariable("LOGNAME");
+    if (localUser.isEmpty()) {
+        char* l = getlogin();
+        if (l) localUser = QString::fromUtf8(l);
+    }
+    if (!localUser.isEmpty()) {
+        users << localUser;
+        if (localUser != localUser.toLower()) {
+            users << localUser.toLower();
+        }
+    }
+    QString customUser = qEnvironmentVariable("RDP_USERNAME");
+    if (!customUser.isEmpty() && !users.contains(customUser)) {
+        users << customUser;
+        if (customUser != customUser.toLower()) {
+            users << customUser.toLower();
+        }
+    }
+
+    QTextStream out(&samFile);
+    for (const QString& user : users) {
+        out << user << ":::" << hexHash << ":::\n";
+    }
+    samFile.close();
+    qInfo() << "NLA SAM database generated at" << m_samFilePath << "for users:" << users;
+}
+
+void RdpServer::cleanupSamDatabase()
+{
+    if (!m_samFilePath.isEmpty() && QFile::exists(m_samFilePath)) {
+        QFile::remove(m_samFilePath);
+        m_samFilePath.clear();
+    }
+}
+
 bool RdpServer::start(int port)
 {
     if (m_running)
@@ -174,6 +256,9 @@ bool RdpServer::start(int port)
 
     // Generate certificates if they do not exist
     generateCertificate();
+
+    // Prepare SAM database for NLA authentication if RDP_PASSWORD is configured
+    setupSamDatabase();
 
     m_listener = freerdp_listener_new();
     if (!m_listener) {
@@ -251,6 +336,8 @@ void RdpServer::stop()
         freerdp_listener_free(m_listener);
         m_listener = nullptr;
     }
+
+    cleanupSamDatabase();
 }
 
 DWORD WINAPI RdpServer::listenerThread(LPVOID param)
@@ -484,11 +571,31 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     
     // Configure secure protocols
     freerdp_settings_set_bool(settings, FreeRDP_AutoLogonEnabled, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, TRUE);
+
+    bool hasRdpPassword = !qEnvironmentVariable("RDP_PASSWORD").isEmpty();
+    bool noAuth = (qEnvironmentVariable("RDP_NO_AUTH") == "1");
+
+    if (hasRdpPassword && !noAuth) {
+        if (server->m_samFilePath.isEmpty() || !QFile::exists(server->m_samFilePath)) {
+            server->setupSamDatabase();
+        }
+        if (!server->m_samFilePath.isEmpty()) {
+            freerdp_settings_set_string(settings, FreeRDP_NtlmSamFile, server->m_samFilePath.toUtf8().constData());
+            freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
+            qInfo() << "Configured NLA security with SAM database for connection:" << peer->hostname;
+        } else {
+            freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
+        }
+    } else {
+        freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
+        if (!noAuth && !hasRdpPassword) {
+            qInfo() << "Operating in TLS / PAM mode (RDP_PASSWORD not set) for connection:" << peer->hostname;
+        }
+    }
     
     // Capabilities and graphics pipeline
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
@@ -684,14 +791,21 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
 
 BOOL RdpServer::peerLogon(freerdp_peer* peer, const SEC_WINNT_AUTH_IDENTITY* identity, BOOL automatic)
 {
+    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(peer->context);
+    RdpServer* server = ctx->server;
+
+    // If NLA security was active, FreeRDP has authenticated the client against the SAM database
+    if (freerdp_settings_get_bool(peer->context->settings, FreeRDP_NlaSecurity)) {
+        qInfo() << "peerLogon: Connection authorized via NLA SAM database";
+        ctx->authenticated = true;
+        return TRUE;
+    }
+
     // If no identity provided during early TLS negotiation, defer authentication to peerPostConnect
     if (!identity || (!identity->User && identity->UserLength == 0)) {
         qInfo() << "peerLogon: No identity in early handshake, deferring to PostConnect (automatic:" << automatic << ")";
         return TRUE;
     }
-
-    MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(peer->context);
-    RdpServer* server = ctx->server;
     
     // Extract credentials securely based on ANSI vs Unicode encoding flags
     bool isUnicode = (identity->Flags & SEC_WINNT_AUTH_IDENTITY_UNICODE) || !(identity->Flags & SEC_WINNT_AUTH_IDENTITY_ANSI);
@@ -712,9 +826,17 @@ BOOL RdpServer::peerLogon(freerdp_peer* peer, const SEC_WINNT_AUTH_IDENTITY* ide
     if (username.contains('\\')) {
         username = username.section('\\', -1);
     }
+    if (username.contains('@')) {
+        username = username.section('@', 0, 0);
+    }
 
-    if (username.isEmpty() || password.isEmpty()) {
-        qInfo() << "peerLogon: Username or password empty in early handshake, deferring to PostConnect";
+    if (username.isEmpty()) {
+        username = qEnvironmentVariable("USER");
+        if (username.isEmpty()) username = qEnvironmentVariable("LOGNAME");
+    }
+
+    if (password.isEmpty()) {
+        qInfo() << "peerLogon: Password empty in early handshake, deferring to PostConnect";
         return TRUE;
     }
 
@@ -722,7 +844,11 @@ BOOL RdpServer::peerLogon(freerdp_peer* peer, const SEC_WINNT_AUTH_IDENTITY* ide
             << "(password length:" << password.length() << "automatic:" << automatic << ")";
     
     bool authenticated = server->authenticateUser(username, password);
-    return authenticated ? TRUE : FALSE;
+    if (authenticated) {
+        ctx->authenticated = true;
+        return TRUE;
+    }
+    return FALSE;
 }
 
 BOOL RdpServer::peerActivate(freerdp_peer* peer)
@@ -935,6 +1061,22 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     RdpServer* server = ctx->server;
     rdpSettings* settings = peer->context->settings;
 
+    // 1. Passwordless LAN mode
+    if (qEnvironmentVariable("RDP_NO_AUTH") == "1") {
+        qInfo() << "peerPostConnect: Authentication bypassed due to RDP_NO_AUTH=1";
+        ctx->authenticated = true;
+        return TRUE;
+    }
+
+    // 2. Previously authenticated via NLA SAM database or peerLogon
+    UINT32 selectedProtocol = freerdp_settings_get_uint32(settings, FreeRDP_SelectedProtocol);
+    bool isNla = (selectedProtocol == 2 /* PROTOCOL_HYBRID */ || selectedProtocol == 8 /* PROTOCOL_HYBRID_EX */);
+    if (ctx->authenticated || (isNla && freerdp_settings_get_bool(settings, FreeRDP_NlaSecurity))) {
+        qInfo() << "peerPostConnect: Peer authorized via NLA SAM database (selectedProtocol:" << selectedProtocol << ")";
+        return TRUE;
+    }
+
+    // 3. Extract credentials from Client Info PDU (TLS / Standard RDP)
     const char* u = freerdp_settings_get_string(settings, FreeRDP_Username);
     const char* p = freerdp_settings_get_string(settings, FreeRDP_Password);
 
@@ -944,10 +1086,19 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     if (username.contains('\\')) {
         username = username.section('\\', -1);
     }
+    if (username.contains('@')) {
+        username = username.section('@', 0, 0);
+    }
 
     if (username.isEmpty()) {
-        qWarning() << "No username provided by client, rejecting authentication";
-        return FALSE;
+        username = qEnvironmentVariable("USER");
+        if (username.isEmpty()) username = qEnvironmentVariable("LOGNAME");
+        if (username.isEmpty()) {
+            char* login = getlogin();
+            if (login) username = QString::fromUtf8(login);
+        }
+        if (username.isEmpty()) username = QStringLiteral("user");
+        qInfo() << "peerPostConnect: No username provided by client, defaulting to session user:" << username;
     }
 
     qInfo() << "peerPostConnect: verifying credentials for user:" << username
@@ -956,6 +1107,9 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     bool authenticated = server->authenticateUser(username, password);
     if (!authenticated) {
         qWarning() << "Authentication failed in PostConnect for user:" << username;
+        if (peer->context && peer->context->rdp) {
+            freerdp_set_error_info(peer->context->rdp, ERRINFO_SERVER_FRESH_CREDENTIALS_REQUIRED);
+        }
         return FALSE;
     }
 

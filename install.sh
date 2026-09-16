@@ -79,7 +79,10 @@ echo "   Installed ${BIN_INSTALL_DIR}/wayrdp"
 if [ ! -f "${CONFIG_FILE}" ]; then
     echo -e "\n-> Initializing default configuration at ${CONFIG_FILE}..."
     mkdir -p "$(dirname "${CONFIG_FILE}")"
-    if [ -f "${SCRIPT_DIR}/wayrdp.env.example" ]; then
+    if [ -f "${HOME}/.config/kde-virtual-rdp.env" ]; then
+        cp "${HOME}/.config/kde-virtual-rdp.env" "${CONFIG_FILE}"
+        echo "   Migrated existing configuration from ~/.config/kde-virtual-rdp.env to ${CONFIG_FILE}"
+    elif [ -f "${SCRIPT_DIR}/wayrdp.env.example" ]; then
         cp "${SCRIPT_DIR}/wayrdp.env.example" "${CONFIG_FILE}"
     else
         cat << 'EOF' > "${CONFIG_FILE}"
