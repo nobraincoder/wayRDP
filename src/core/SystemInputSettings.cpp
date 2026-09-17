@@ -57,10 +57,10 @@ void SystemInputSettings::reload()
     // 3. Apply Environment overrides
     applyEnvironmentOverrides();
 
-    qInfo() << QString("SystemInputSettings: NaturalScroll=%1, FlickScroll=%2, ScrollFactor=%3, LeftHanded=%4, Cursor=%5(%6px), EffectiveScale=%7")
+    qInfo() << QString("SystemInputSettings: NaturalScroll=%1, ScrollFactor=%2, WindowsScrollScale=%3, LeftHanded=%4, Cursor=%5(%6px), EffectiveScale=%7")
                    .arg(m_naturalScroll ? "true" : "false")
-                   .arg(m_flickScroll ? "true" : "false")
                    .arg(m_scrollFactor)
+                   .arg(m_windowsScrollScale)
                    .arg(m_leftHanded ? "true" : "false")
                    .arg(m_cursorTheme)
                    .arg(m_cursorSize)
@@ -199,9 +199,12 @@ void SystemInputSettings::applyEnvironmentOverrides()
         m_naturalScroll = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
     }
 
-    if (qEnvironmentVariableIsSet("RDP_FLICK_SCROLL")) {
-        QString val = qEnvironmentVariable("RDP_FLICK_SCROLL").trimmed();
-        m_flickScroll = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
+    if (qEnvironmentVariableIsSet("RDP_WINDOWS_SCROLL_SCALE")) {
+        bool ok = false;
+        double scale = qEnvironmentVariable("RDP_WINDOWS_SCROLL_SCALE").toDouble(&ok);
+        if (ok && scale > 0.0) {
+            m_windowsScrollScale = scale;
+        }
     }
 
     if (qEnvironmentVariableIsSet("RDP_LEFT_HANDED")) {

@@ -59,11 +59,6 @@ std::optional<EisPointerDevice::Region> EisPointerDevice::regionForMapping(const
 EiConnection::EiConnection(int fd, QObject *parent)
     : QObject(parent)
 {
-    if (qEnvironmentVariableIsSet("RDP_FLICK_SCROLL")) {
-        QString val = qEnvironmentVariable("RDP_FLICK_SCROLL").trimmed();
-        m_flickScroll = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
-    }
-
     m_ei = ei_new_sender(this);
     if (!m_ei) {
         qWarning() << "EiConnection: Could not create libei sender context";

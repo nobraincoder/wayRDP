@@ -1061,6 +1061,12 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     RdpServer* server = ctx->server;
     rdpSettings* settings = peer->context->settings;
 
+    // Detect client OS type (Windows, Mac, iOS, Android, etc.)
+    UINT32 osMajor = freerdp_settings_get_uint32(settings, FreeRDP_OsMajorType);
+    ctx->isWindowsClient = (osMajor == 1 /* OSMAJORTYPE_WINDOWS */);
+    qInfo() << "peerPostConnect: Client OS:" << freerdp_peer_os_major_type_string(peer)
+            << "(osMajor:" << osMajor << ") isWindows:" << ctx->isWindowsClient;
+
     // 1. Passwordless LAN mode
     if (qEnvironmentVariable("RDP_NO_AUTH") == "1") {
         qInfo() << "peerPostConnect: Authentication bypassed due to RDP_NO_AUTH=1";
@@ -1286,11 +1292,13 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
             return TRUE;
         }
 
+        double osScale = (ctx && ctx->isWindowsClient) ? server->m_inputSettings.windowsScrollScale() : 1.0;
+
         if (flags & PTR_FLAGS_WHEEL) {
-            double dy = server->m_inputSettings.computeVerticalDelta(rawDelta);
+            double dy = server->m_inputSettings.computeVerticalDelta(rawDelta) * osScale;
             emit server->pointerAxis(0.0, dy);
         } else if (flags & PTR_FLAGS_HWHEEL) {
-            double dx = server->m_inputSettings.computeHorizontalDelta(rawDelta);
+            double dx = server->m_inputSettings.computeHorizontalDelta(rawDelta) * osScale;
             emit server->pointerAxis(dx, 0.0);
         }
 

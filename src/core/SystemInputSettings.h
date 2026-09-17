@@ -15,9 +15,9 @@ public:
     void reload();
 
     bool isNaturalScroll() const { return m_naturalScroll; }
-    bool isFlickScroll() const { return m_flickScroll; }
     double scrollFactor() const { return m_scrollFactor; }
     double effectiveScrollScale() const;
+    double windowsScrollScale() const { return m_windowsScrollScale; }
 
     bool isLeftHanded() const { return m_leftHanded; }
     uint32_t mapPointerButton(uint32_t button) const;
@@ -39,8 +39,8 @@ private:
     void applyEnvironmentOverrides();
 
     bool m_naturalScroll{true};
-    bool m_flickScroll{true};
     double m_scrollFactor{1.0};
+    double m_windowsScrollScale{0.5};
     bool m_invertHScroll{false};
     bool m_invertVScroll{false};
     bool m_hasCustomScale{false};

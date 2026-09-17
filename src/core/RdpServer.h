@@ -40,6 +40,7 @@ struct MyPeerContext {
     bool dispOpened;
     bool activated;
     bool authenticated{false};
+    bool isWindowsClient{false};
 };
 
 class RdpServer : public QObject
