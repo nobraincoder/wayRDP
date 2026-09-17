@@ -98,8 +98,8 @@ void QtAudioController::captureWorker()
     ss.rate = rate;
     ss.channels = 2;
 
-    // 50ms chunk = (rate * 50 / 1000) frames * 4 bytes/frame (matches RDP latency buffer)
-    uint32_t chunkSize = (rate * 50 / 1000) * 4;
+    // 20ms chunk = (rate * 20 / 1000) frames * 4 bytes/frame (matches RDP latency buffer)
+    uint32_t chunkSize = (rate * 20 / 1000) * 4;
 
     pa_buffer_attr attr;
     attr.maxlength = static_cast<uint32_t>(-1);
@@ -140,7 +140,7 @@ void QtAudioController::captureWorker()
         return;
     }
 
-    float volumeScale = 0.70f;
+    float volumeScale = 1.0f;
     if (qEnvironmentVariableIsSet("RDP_AUDIO_VOLUME")) {
         bool ok = false;
         double v = qEnvironmentVariable("RDP_AUDIO_VOLUME").toDouble(&ok);
@@ -150,7 +150,7 @@ void QtAudioController::captureWorker()
     }
 
     qInfo() << "QtAudioController: PulseAudio recording started for desktop audio at" << rate
-            << "Hz 16-bit stereo (50ms buffer:" << chunkSize << "bytes, volume headroom scale:" << volumeScale << ")";
+            << "Hz 16-bit stereo (20ms buffer:" << chunkSize << "bytes, volume headroom scale:" << volumeScale << ")";
 
     QByteArray buffer(chunkSize, 0);
 

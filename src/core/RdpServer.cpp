@@ -1014,13 +1014,13 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             rdpsnd->server_formats = server->m_pcmFormats;
             rdpsnd->num_server_formats = 2;
             rdpsnd->src_format = &server->m_pcmFormats[0];
-            rdpsnd->latency = 50; // 50ms buffer to eliminate jitter and crackling
+            rdpsnd->latency = 20; // 20ms buffer for low latency and smooth jitter-free playback
             rdpsnd->Activated = rdpsnd_activated;
 
             if (rdpsnd->Initialize(rdpsnd, TRUE) == CHANNEL_RC_OK) {
                 QMutexLocker locker(&server->m_audioMutex);
                 server->m_rdpsndContext = rdpsnd;
-                qInfo() << "Audio output (rdpsnd) channel initialized with 50ms buffer";
+                qInfo() << "Audio output (rdpsnd) channel initialized with 20ms buffer";
             } else {
                 qWarning() << "Failed to initialize rdpsnd channel";
                 rdpsnd_server_context_free(rdpsnd);
@@ -2128,8 +2128,9 @@ void RdpServer::onKlipperClipboardUpdated()
 
 void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 {
-    qInfo() << "RDPSND channel activated by client";
     if (!context) return;
+    qInfo() << "RDPSND channel activated by client (version:" << context->clientVersion
+            << "caps: 0x" + QString::number(context->capsFlags, 16) << ")";
 
     RdpServer* server = static_cast<RdpServer*>(context->data);
     if (!server) return;
@@ -2194,7 +2195,7 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 
         // MUST set latency and src_format BEFORE SelectFormat, because SelectFormat
         // internally computes out_frames = src_format->nSamplesPerSec * latency / 1000
-        context->latency = 50; // 50ms fragment size for smooth jitter-free playback
+        context->latency = 20; // 20ms fragment size for smooth low-latency jitter-free playback
 
         // Update src_format to match the selected sample rate
         if (selectedRate == 44100) {
@@ -2211,7 +2212,7 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 
         server->m_audioSampleRate = selectedRate;
         server->m_audioFramesSent = 0;
-        server->m_audioTimestamp = static_cast<UINT16>(GetTickCount64() % 65536);
+        server->m_audioTimestamp = 0;
         server->m_audioReady = true;
 
         QMetaObject::invokeMethod(server, "audioConfigured", Qt::QueuedConnection,
@@ -2232,9 +2233,26 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     if (rate == 0) rate = 48000;
 
     // Advance timestamp strictly based on the sample count to ensure smooth, click-free audio clock sync
-    UINT16 timestamp = m_audioTimestamp;
-    m_audioTimestamp = static_cast<UINT16>((m_audioTimestamp + (nframes * 1000 / rate)) % 65536);
+    UINT32 elapsedMs = static_cast<UINT32>(m_audioFramesSent.load() * 1000 / rate);
+    m_audioFramesSent += nframes;
+    UINT16 timestamp16 = static_cast<UINT16>(elapsedMs % 65536);
+    UINT32 timestamp32 = elapsedMs;
 
-    m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, timestamp);
+    // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),
+    // SendSamples2 transmits raw PCM audio directly via atomic SNDC_WAVE2 PDUs without
+    // going through FreeRDP's lossy DSP resampler or splitting/zeroing packet headers.
+    if (m_rdpsndContext->clientVersion >= 8 && m_rdpsndContext->SendSamples2) {
+        UINT rc = m_rdpsndContext->SendSamples2(m_rdpsndContext,
+                                               m_rdpsndContext->selected_client_format,
+                                               data.constData(),
+                                               data.size(),
+                                               timestamp16,
+                                               timestamp32);
+        if (rc == CHANNEL_RC_OK) {
+            return;
+        }
+    }
+
+    m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, timestamp16);
 }
 

@@ -222,7 +222,7 @@ int main(int argc, char *argv[])
     QObject::connect(&server, &RdpServer::audioConfigured,
                      &audioController, &QtAudioController::startAudioCapture);
     QObject::connect(&audioController, &QtAudioController::audioSamplesReady,
-                     &server, &RdpServer::sendAudioSamples);
+                     &server, &RdpServer::sendAudioSamples, Qt::DirectConnection);
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      &audioController, &QtAudioController::stopAudioCapture);
 
