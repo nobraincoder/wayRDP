@@ -237,7 +237,9 @@ double SystemInputSettings::effectiveScrollScale() const
     if (m_hasCustomScale) {
         return m_customScale;
     }
-    return 0.125 * m_scrollFactor;
+    // GNOME Remote Desktop standard: (10.0 logical px / 120 RDP wheel units) * KDE scroll factor.
+    // Provides smooth high-DPI scaling across 1x, 1.5x, 2x displays.
+    return (10.0 / 120.0) * m_scrollFactor;
 }
 
 double SystemInputSettings::computeVerticalDelta(int16_t rawDelta) const

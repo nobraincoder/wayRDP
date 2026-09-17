@@ -59,10 +59,6 @@ std::optional<EisPointerDevice::Region> EisPointerDevice::regionForMapping(const
 EiConnection::EiConnection(int fd, QObject *parent)
     : QObject(parent)
 {
-    m_scrollStopTimer = new QTimer(this);
-    m_scrollStopTimer->setSingleShot(true);
-    connect(m_scrollStopTimer, &QTimer::timeout, this, &EiConnection::onScrollStopTimeout);
-
     m_ei = ei_new_sender(this);
     if (!m_ei) {
         qWarning() << "EiConnection: Could not create libei sender context";
@@ -197,11 +193,6 @@ void EiConnection::sendPointerAxis(double dx, double dy)
     }
     if (!pointerDevice) return;
 
-    if (m_scrollStopTimer) {
-        m_scrollStopTimer->start(150);
-    }
-    m_isScrolling = true;
-
     // Pass computed Wayland deltas directly to libei (dx > 0: right, dy > 0: down)
     ei_device_scroll_delta(pointerDevice->device(), dx, dy);
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
@@ -217,31 +208,11 @@ void EiConnection::sendPointerAxisDiscrete(uint axis, int steps)
     }
     if (!pointerDevice) return;
 
-    if (m_scrollStopTimer) {
-        m_scrollStopTimer->start(150);
-    }
-    m_isScrolling = true;
-
     int32_t x = (axis == 1) ? (steps * 120) : 0;
     int32_t y = (axis == 0) ? (steps * 120) : 0;
 
     ei_device_scroll_discrete(pointerDevice->device(), x, y);
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
-}
-
-void EiConnection::onScrollStopTimeout()
-{
-    if (!m_ei || !m_isScrolling) return;
-
-    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
-    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_SCROLL)) {
-        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
-    }
-    if (pointerDevice) {
-        ei_device_scroll_stop(pointerDevice->device(), true, true);
-        ei_device_frame(pointerDevice->device(), ei_now(m_ei));
-    }
-    m_isScrolling = false;
 }
 
 void EiConnection::sendKeyboardKeycode(int keycode, uint state)

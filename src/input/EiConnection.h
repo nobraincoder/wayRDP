@@ -72,7 +72,6 @@ signals:
 
 private slots:
     void onEisReadyRead();
-    void onScrollStopTimeout();
 
 private:
     void processEisEvents();
@@ -85,8 +84,6 @@ private:
     QString m_lastMappingId;
     std::unique_ptr<EiDevice> m_keyboardDevice;
     std::unique_ptr<EiDevice> m_textDevice;
-    QTimer *m_scrollStopTimer{nullptr};
-    bool m_isScrolling{false};
 };
 
 #endif // EICONNECTION_H

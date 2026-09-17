@@ -42,7 +42,7 @@ private:
     bool m_invertHScroll{false};
     bool m_invertVScroll{false};
     bool m_hasCustomScale{false};
-    double m_customScale{0.125};
+    double m_customScale{10.0 / 120.0};
 
     bool m_leftHanded{false};
     QString m_cursorTheme{"breeze_cursors"};
