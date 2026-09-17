@@ -998,23 +998,33 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
         }
     }
 
-    // Initialize Audio Output (rdpsnd) channel
-    RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(ctx->vcm);
-    if (rdpsnd) {
-        rdpsnd->data = server;
-        rdpsnd->server_formats = server->m_pcmFormats;
-        rdpsnd->num_server_formats = 2;
-        rdpsnd->src_format = &server->m_pcmFormats[0];
-        rdpsnd->latency = 20;
-        rdpsnd->Activated = rdpsnd_activated;
+    // Initialize Audio Output (rdpsnd) channel if enabled
+    bool audioEnabled = true;
+    if (qEnvironmentVariableIsSet("RDP_AUDIO")) {
+        QString a = qEnvironmentVariable("RDP_AUDIO").trimmed().toLower();
+        if (a == "0" || a == "false" || a == "off") {
+            audioEnabled = false;
+        }
+    }
 
-        if (rdpsnd->Initialize(rdpsnd, TRUE) == CHANNEL_RC_OK) {
-            QMutexLocker locker(&server->m_audioMutex);
-            server->m_rdpsndContext = rdpsnd;
-            qInfo() << "Audio output (rdpsnd) channel initialized";
-        } else {
-            qWarning() << "Failed to initialize rdpsnd channel";
-            rdpsnd_server_context_free(rdpsnd);
+    if (audioEnabled) {
+        RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(ctx->vcm);
+        if (rdpsnd) {
+            rdpsnd->data = server;
+            rdpsnd->server_formats = server->m_pcmFormats;
+            rdpsnd->num_server_formats = 2;
+            rdpsnd->src_format = &server->m_pcmFormats[0];
+            rdpsnd->latency = 50; // 50ms buffer to eliminate jitter and crackling
+            rdpsnd->Activated = rdpsnd_activated;
+
+            if (rdpsnd->Initialize(rdpsnd, TRUE) == CHANNEL_RC_OK) {
+                QMutexLocker locker(&server->m_audioMutex);
+                server->m_rdpsndContext = rdpsnd;
+                qInfo() << "Audio output (rdpsnd) channel initialized with 50ms buffer";
+            } else {
+                qWarning() << "Failed to initialize rdpsnd channel";
+                rdpsnd_server_context_free(rdpsnd);
+            }
         }
     }
 
@@ -2184,7 +2194,7 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 
         // MUST set latency and src_format BEFORE SelectFormat, because SelectFormat
         // internally computes out_frames = src_format->nSamplesPerSec * latency / 1000
-        context->latency = 20; // Match PulseAudio 20ms fragment size exactly
+        context->latency = 50; // 50ms fragment size for smooth jitter-free playback
 
         // Update src_format to match the selected sample rate
         if (selectedRate == 44100) {
@@ -2195,13 +2205,13 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 
         context->SelectFormat(context, static_cast<UINT16>(selectedIndex));
 
-        // Set volume to maximum after format is selected
-        if (context->SetVolume) {
-            context->SetVolume(context, 0xFFFF, 0xFFFF);
-        }
+        // NOTE: Do NOT call SetVolume(0xFFFF) — it forcibly sets the client OS master volume to 100%,
+        // which causes ear-splitting loudness and digital clipping on the client!
+        // Leaving client volume untouched preserves the user's preferred local volume level.
 
         server->m_audioSampleRate = selectedRate;
         server->m_audioFramesSent = 0;
+        server->m_audioTimestamp = static_cast<UINT16>(GetTickCount64() % 65536);
         server->m_audioReady = true;
 
         QMetaObject::invokeMethod(server, "audioConfigured", Qt::QueuedConnection,
@@ -2221,8 +2231,9 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     uint32_t rate = m_audioSampleRate.load();
     if (rate == 0) rate = 48000;
 
-    // MS-RDPEA requires wTimeStamp to be the actual monotonic transmission time
-    UINT16 timestamp = static_cast<UINT16>(GetTickCount64() % 65536);
+    // Advance timestamp strictly based on the sample count to ensure smooth, click-free audio clock sync
+    UINT16 timestamp = m_audioTimestamp;
+    m_audioTimestamp = static_cast<UINT16>((m_audioTimestamp + (nframes * 1000 / rate)) % 65536);
 
     m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, timestamp);
 }

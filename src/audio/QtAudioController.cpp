@@ -48,8 +48,8 @@ void QtAudioController::captureWorker()
     ss.rate = rate;
     ss.channels = 2;
 
-    // 20ms chunk = (rate * 20 / 1000) frames * 4 bytes/frame
-    uint32_t chunkSize = (rate * 20 / 1000) * 4;
+    // 50ms chunk = (rate * 50 / 1000) frames * 4 bytes/frame (matches RDP latency buffer)
+    uint32_t chunkSize = (rate * 50 / 1000) * 4;
 
     pa_buffer_attr attr;
     attr.maxlength = static_cast<uint32_t>(-1);
@@ -86,10 +86,19 @@ void QtAudioController::captureWorker()
         return;
     }
 
-    qInfo() << "QtAudioController: PulseAudio recording started for desktop audio at" << rate << "Hz 16-bit stereo (chunk size:" << chunkSize << "bytes)";
+    float volumeScale = 0.70f;
+    if (qEnvironmentVariableIsSet("RDP_AUDIO_VOLUME")) {
+        bool ok = false;
+        double v = qEnvironmentVariable("RDP_AUDIO_VOLUME").toDouble(&ok);
+        if (ok && v >= 0.0 && v <= 2.0) {
+            volumeScale = static_cast<float>(v);
+        }
+    }
+
+    qInfo() << "QtAudioController: PulseAudio recording started for desktop audio at" << rate
+            << "Hz 16-bit stereo (50ms buffer:" << chunkSize << "bytes, volume headroom scale:" << volumeScale << ")";
 
     QByteArray buffer(chunkSize, 0);
-    int silentChunkCount = 0;
 
     while (m_recording) {
         if (pa_simple_read(s, buffer.data(), chunkSize, &error) < 0) {
@@ -99,27 +108,17 @@ void QtAudioController::captureWorker()
             break;
         }
 
-        // Silence suppression: avoid transmitting endless zero-payload audio packets over the network
-        const int16_t* samples = reinterpret_cast<const int16_t*>(buffer.constData());
-        size_t sampleCount = buffer.size() / sizeof(int16_t);
-        bool isSilent = true;
-        for (size_t i = 0; i < sampleCount; ++i) {
-            if (std::abs(samples[i]) > 10) {
-                isSilent = false;
-                break;
+        // Apply volume headroom scaling with saturation clamping to prevent digital clipping/distortion
+        if (volumeScale < 0.99f || volumeScale > 1.01f) {
+            int16_t* samples = reinterpret_cast<int16_t*>(buffer.data());
+            size_t sampleCount = buffer.size() / sizeof(int16_t);
+            for (size_t i = 0; i < sampleCount; ++i) {
+                int32_t val = static_cast<int32_t>(samples[i] * volumeScale);
+                samples[i] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
             }
         }
 
-        if (isSilent) {
-            silentChunkCount++;
-            // Send up to 5 silent chunks (~100ms) to allow smooth client buffer ramp-down, then pause
-            if (silentChunkCount <= 5) {
-                emit audioSamplesReady(buffer);
-            }
-        } else {
-            silentChunkCount = 0;
-            emit audioSamplesReady(buffer);
-        }
+        emit audioSamplesReady(buffer);
     }
 
     pa_simple_free(s);
