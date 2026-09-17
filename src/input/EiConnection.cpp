@@ -200,9 +200,6 @@ void EiConnection::sendPointerAxis(double dx, double dy)
 
     // Pass computed Wayland deltas directly to libei (dx > 0: right, dy > 0: down)
     ei_device_scroll_delta(pointerDevice->device(), dx, dy);
-    if (!m_flickScroll) {
-        ei_device_scroll_stop(pointerDevice->device(), dx != 0.0, dy != 0.0);
-    }
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
 }
 
@@ -220,9 +217,6 @@ void EiConnection::sendPointerAxisDiscrete(uint axis, int steps)
     int32_t y = (axis == 0) ? (steps * 120) : 0;
 
     ei_device_scroll_discrete(pointerDevice->device(), x, y);
-    if (!m_flickScroll) {
-        ei_device_scroll_stop(pointerDevice->device(), axis == 1, axis == 0);
-    }
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
 }
 
