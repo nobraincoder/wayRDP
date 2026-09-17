@@ -25,6 +25,7 @@ public slots:
     void setQuality(int quality);
     void setTargetResolution(const QSize &size);
     void onClientActivity();
+    void onMotionActivity();
 
 signals:
     void videoPacketEncoded(const QByteArray &data, bool isKeyFrame);
@@ -39,9 +40,17 @@ private slots:
     void checkIdleTimeout();
 
 private:
+    void updateEffectiveQuality();
+
     PipeWireEncodedStream* m_stream;
     uint32_t m_framerate;
     int m_quality;
+    int m_baseQuality{80};
+
+    // Motion-Adaptive Quality (Dynamic quality drop during heavy motion/scrolling)
+    bool m_isMotionActive{false};
+    int m_motionQualityDelta{20};
+    QTimer *m_motionTimer{nullptr};
 
     QElapsedTimer m_fpsTimer;
     int m_fpsFrameCount;

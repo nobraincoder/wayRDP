@@ -189,8 +189,16 @@ int main(int argc, char *argv[])
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerButton);
     QObject::connect(&server, &RdpServer::pointerAxis,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerAxis);
+    QObject::connect(&server, &RdpServer::pointerAxis,
+                     &streamController, [&streamController](double, double) {
+                         streamController.onMotionActivity();
+                     });
     QObject::connect(&server, &RdpServer::pointerAxisDiscrete,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerAxisDiscrete);
+    QObject::connect(&server, &RdpServer::pointerAxisDiscrete,
+                     &streamController, [&streamController](double, double) {
+                         streamController.onMotionActivity();
+                     });
     QObject::connect(&server, &RdpServer::keyboardKeycode,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendKeyboardKeycode);
     QObject::connect(&server, &RdpServer::keyboardKeysym,

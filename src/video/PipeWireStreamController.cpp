@@ -2,13 +2,22 @@
 #include <QDebug>
 
 PipeWireStreamController::PipeWireStreamController(QObject *parent)
-    : QObject(parent), m_stream(nullptr), m_framerate(60), m_quality(80), m_fpsFrameCount(0), m_lastFpsLogTime(0)
+    : QObject(parent), m_stream(nullptr), m_framerate(60), m_quality(80), m_baseQuality(80), m_fpsFrameCount(0), m_lastFpsLogTime(0)
 {
     if (qEnvironmentVariableIsSet("RDP_QUALITY")) {
         bool ok = false;
         int envQuality = qEnvironmentVariableIntValue("RDP_QUALITY", &ok);
         if (ok && envQuality >= 30 && envQuality <= 100) {
             m_quality = envQuality;
+            m_baseQuality = envQuality;
+        }
+    }
+
+    if (qEnvironmentVariableIsSet("RDP_MOTION_QUALITY_DELTA")) {
+        bool ok = false;
+        int delta = qEnvironmentVariableIntValue("RDP_MOTION_QUALITY_DELTA", &ok);
+        if (ok && delta >= 0 && delta <= 50) {
+            m_motionQualityDelta = delta;
         }
     }
 
@@ -28,11 +37,37 @@ PipeWireStreamController::PipeWireStreamController(QObject *parent)
     m_idleTimer = new QTimer(this);
     m_idleTimer->setInterval(2000);
     connect(m_idleTimer, &QTimer::timeout, this, &PipeWireStreamController::checkIdleTimeout);
+
+    m_motionTimer = new QTimer(this);
+    m_motionTimer->setSingleShot(true);
+    connect(m_motionTimer, &QTimer::timeout, this, [this]() {
+        if (m_isMotionActive) {
+            m_isMotionActive = false;
+            updateEffectiveQuality();
+        }
+    });
 }
 
 PipeWireStreamController::~PipeWireStreamController()
 {
     onStreamStopped();
+}
+
+void PipeWireStreamController::updateEffectiveQuality()
+{
+    int effectiveQuality = m_baseQuality;
+    if (m_isMotionActive && m_motionQualityDelta > 0) {
+        effectiveQuality = qBound(35, m_baseQuality - m_motionQualityDelta, 85);
+    }
+
+    if (m_quality != effectiveQuality) {
+        m_quality = effectiveQuality;
+        qInfo() << "PipeWireStreamController: Motion state" << (m_isMotionActive ? "active" : "idle")
+                << "-> Stream quality set to" << m_quality << "%";
+        if (m_stream) {
+            m_stream->setQuality(m_quality);
+        }
+    }
 }
 
 void PipeWireStreamController::setEncodingParameters(uint32_t fps, int quality)
@@ -41,24 +76,20 @@ void PipeWireStreamController::setEncodingParameters(uint32_t fps, int quality)
     if (!m_isIdle) {
         m_framerate = fps;
     }
+    int targetQuality = quality;
     if (qEnvironmentVariableIsSet("RDP_QUALITY")) {
         bool ok = false;
         int envQuality = qEnvironmentVariableIntValue("RDP_QUALITY", &ok);
         if (ok && envQuality >= 30 && envQuality <= 100) {
-            m_quality = envQuality;
-        } else {
-            m_quality = quality;
+            targetQuality = std::min(quality, envQuality);
         }
-    } else {
-        m_quality = quality;
     }
-    qInfo() << "PipeWireStreamController: Setting encoding parameters to" << fps << "fps, quality" << m_quality;
-    if (m_stream) {
-        if (!m_isIdle) {
-            m_stream->setMaxFramerate(fps);
-        }
-        m_stream->setQuality(m_quality);
+    m_baseQuality = targetQuality;
+    qInfo() << "PipeWireStreamController: Setting encoding parameters to" << fps << "fps, base quality" << m_baseQuality;
+    if (m_stream && !m_isIdle) {
+        m_stream->setMaxFramerate(fps);
     }
+    updateEffectiveQuality();
 }
 
 void PipeWireStreamController::setMaxFramerate(uint32_t fps)
@@ -74,10 +105,8 @@ void PipeWireStreamController::setMaxFramerate(uint32_t fps)
 
 void PipeWireStreamController::setQuality(int quality)
 {
-    m_quality = quality;
-    if (m_stream) {
-        m_stream->setQuality(quality);
-    }
+    m_baseQuality = quality;
+    updateEffectiveQuality();
 }
 
 void PipeWireStreamController::setTargetResolution(const QSize &size)
@@ -148,7 +177,7 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    m_stream->setMaxPendingFrames(25);
+    m_stream->setMaxPendingFrames(50);
 
     const auto suggested = m_stream->suggestedEncoders();
     qInfo() << "PipeWireStreamController: Video encoder configured with quality:" << m_quality << "% | Suggested encoders:" << suggested;
@@ -228,6 +257,12 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         mismatchDropCount = 0;
     }
 
+    // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)
+    // Non-keyframe delta packets > 40KB at 60 FPS indicate heavy motion
+    if (!packet.isKeyFrame() && packet.data().size() > 40 * 1024) {
+        onMotionActivity();
+    }
+
     m_fpsFrameCount++;
     qint64 elapsed = m_fpsTimer.elapsed();
     if (elapsed - m_lastFpsLogTime >= 10000) {
@@ -270,6 +305,23 @@ void PipeWireStreamController::onClientActivity()
         if (m_stream) {
             m_stream->setMaxFramerate(m_activeFramerate);
         }
+    }
+}
+
+void PipeWireStreamController::onMotionActivity()
+{
+    onClientActivity();
+
+    if (m_motionQualityDelta <= 0) {
+        return;
+    }
+
+    if (!m_isMotionActive) {
+        m_isMotionActive = true;
+        updateEffectiveQuality();
+    }
+    if (m_motionTimer) {
+        m_motionTimer->start(350);
     }
 }
 
