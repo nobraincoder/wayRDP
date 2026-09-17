@@ -59,6 +59,15 @@ std::optional<EisPointerDevice::Region> EisPointerDevice::regionForMapping(const
 EiConnection::EiConnection(int fd, QObject *parent)
     : QObject(parent)
 {
+    if (qEnvironmentVariableIsSet("RDP_SMOOTH_SCROLL")) {
+        QString val = qEnvironmentVariable("RDP_SMOOTH_SCROLL").trimmed();
+        m_smoothScrollEnabled = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
+    }
+
+    m_smoothScrollTimer = new QTimer(this);
+    m_smoothScrollTimer->setInterval(8); // 120Hz smooth sub-frame interpolation
+    connect(m_smoothScrollTimer, &QTimer::timeout, this, &EiConnection::onSmoothScrollTick);
+
     m_ei = ei_new_sender(this);
     if (!m_ei) {
         qWarning() << "EiConnection: Could not create libei sender context";
@@ -183,7 +192,7 @@ void EiConnection::sendPointerButton(int button, uint state)
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
 }
 
-void EiConnection::sendPointerAxis(double dx, double dy)
+void EiConnection::dispatchScrollDelta(double dx, double dy)
 {
     if (!m_ei) return;
 
@@ -193,9 +202,71 @@ void EiConnection::sendPointerAxis(double dx, double dy)
     }
     if (!pointerDevice) return;
 
-    // Pass computed Wayland deltas directly to libei (dx > 0: right, dy > 0: down)
     ei_device_scroll_delta(pointerDevice->device(), dx, dy);
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
+}
+
+void EiConnection::sendPointerAxis(double dx, double dy)
+{
+    if (!m_ei) return;
+
+    if (!m_smoothScrollEnabled) {
+        dispatchScrollDelta(dx, dy);
+        return;
+    }
+
+    // Accumulate incoming delta into the sub-frame velocity buffer
+    m_smoothRemainderX += dx;
+    m_smoothRemainderY += dy;
+
+    // Dispatch the first micro-step immediately at t=0ms for zero input lag
+    onSmoothScrollTick();
+
+    // Start 120Hz interpolation timer if there is remaining delta to glide
+    if ((std::abs(m_smoothRemainderX) > 0.05 || std::abs(m_smoothRemainderY) > 0.05) &&
+        !m_smoothScrollTimer->isActive()) {
+        m_smoothScrollTimer->start();
+    }
+}
+
+void EiConnection::onSmoothScrollTick()
+{
+    if (std::abs(m_smoothRemainderX) < 0.05 && std::abs(m_smoothRemainderY) < 0.05) {
+        m_smoothRemainderX = 0.0;
+        m_smoothRemainderY = 0.0;
+        if (m_smoothScrollTimer->isActive()) {
+            m_smoothScrollTimer->stop();
+        }
+        return;
+    }
+
+    // Exponential decay filter: emit 45% of remaining delta per tick (every 8ms)
+    // For small tails (<= 0.25px), flush immediately to prevent dragging
+    double stepX = 0.0;
+    if (std::abs(m_smoothRemainderX) <= 0.25) {
+        stepX = m_smoothRemainderX;
+        m_smoothRemainderX = 0.0;
+    } else {
+        stepX = m_smoothRemainderX * 0.45;
+        m_smoothRemainderX -= stepX;
+    }
+
+    double stepY = 0.0;
+    if (std::abs(m_smoothRemainderY) <= 0.25) {
+        stepY = m_smoothRemainderY;
+        m_smoothRemainderY = 0.0;
+    } else {
+        stepY = m_smoothRemainderY * 0.45;
+        m_smoothRemainderY -= stepY;
+    }
+
+    dispatchScrollDelta(stepX, stepY);
+
+    if (m_smoothRemainderX == 0.0 && m_smoothRemainderY == 0.0) {
+        if (m_smoothScrollTimer->isActive()) {
+            m_smoothScrollTimer->stop();
+        }
+    }
 }
 
 void EiConnection::sendPointerAxisDiscrete(uint axis, int steps)

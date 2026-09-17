@@ -72,9 +72,11 @@ signals:
 
 private slots:
     void onEisReadyRead();
+    void onSmoothScrollTick();
 
 private:
     void processEisEvents();
+    void dispatchScrollDelta(double dx, double dy);
     EisPointerDevice *findPointerDeviceWithCapability(uint32_t capability);
 
     std::unique_ptr<QSocketNotifier> m_eisNotifier;
@@ -84,6 +86,11 @@ private:
     QString m_lastMappingId;
     std::unique_ptr<EiDevice> m_keyboardDevice;
     std::unique_ptr<EiDevice> m_textDevice;
+
+    QTimer *m_smoothScrollTimer{nullptr};
+    double m_smoothRemainderX{0.0};
+    double m_smoothRemainderY{0.0};
+    bool m_smoothScrollEnabled{true};
 };
 
 #endif // EICONNECTION_H
