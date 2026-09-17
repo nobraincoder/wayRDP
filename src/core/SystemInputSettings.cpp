@@ -57,8 +57,9 @@ void SystemInputSettings::reload()
     // 3. Apply Environment overrides
     applyEnvironmentOverrides();
 
-    qInfo() << QString("SystemInputSettings: NaturalScroll=%1, ScrollFactor=%2, LeftHanded=%3, Cursor=%4(%5px), EffectiveScale=%6")
+    qInfo() << QString("SystemInputSettings: NaturalScroll=%1, FlickScroll=%2, ScrollFactor=%3, LeftHanded=%4, Cursor=%5(%6px), EffectiveScale=%7")
                    .arg(m_naturalScroll ? "true" : "false")
+                   .arg(m_flickScroll ? "true" : "false")
                    .arg(m_scrollFactor)
                    .arg(m_leftHanded ? "true" : "false")
                    .arg(m_cursorTheme)
@@ -196,6 +197,11 @@ void SystemInputSettings::applyEnvironmentOverrides()
     if (qEnvironmentVariableIsSet("RDP_NATURAL_SCROLL")) {
         QString val = qEnvironmentVariable("RDP_NATURAL_SCROLL").trimmed();
         m_naturalScroll = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
+    }
+
+    if (qEnvironmentVariableIsSet("RDP_FLICK_SCROLL")) {
+        QString val = qEnvironmentVariable("RDP_FLICK_SCROLL").trimmed();
+        m_flickScroll = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
     }
 
     if (qEnvironmentVariableIsSet("RDP_LEFT_HANDED")) {

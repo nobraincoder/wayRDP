@@ -15,6 +15,7 @@ public:
     void reload();
 
     bool isNaturalScroll() const { return m_naturalScroll; }
+    bool isFlickScroll() const { return m_flickScroll; }
     double scrollFactor() const { return m_scrollFactor; }
     double effectiveScrollScale() const;
 
@@ -38,6 +39,7 @@ private:
     void applyEnvironmentOverrides();
 
     bool m_naturalScroll{true};
+    bool m_flickScroll{true};
     double m_scrollFactor{1.0};
     bool m_invertHScroll{false};
     bool m_invertVScroll{false};

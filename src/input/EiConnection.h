@@ -66,6 +66,9 @@ public:
     void sendKeyboardKeycode(int keycode, uint state);
     void sendKeyboardKeysym(int keysym, uint state);
 
+    void setFlickScroll(bool enabled) { m_flickScroll = enabled; }
+    [[nodiscard]] bool isFlickScroll() const { return m_flickScroll; }
+
 signals:
     void error();
     void connected();
@@ -84,6 +87,7 @@ private:
     QString m_lastMappingId;
     std::unique_ptr<EiDevice> m_keyboardDevice;
     std::unique_ptr<EiDevice> m_textDevice;
+    bool m_flickScroll{true};
 };
 
 #endif // EICONNECTION_H
