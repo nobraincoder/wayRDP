@@ -2,6 +2,7 @@
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <QDebug>
+#include <QProcess>
 
 QtAudioController::QtAudioController(QObject *parent)
     : QObject(parent)
@@ -18,6 +19,45 @@ void QtAudioController::startAudioCapture(uint32_t sampleRate)
     stopAudioCapture();
 
     m_sampleRate = sampleRate;
+
+    // Check if virtual sink is enabled (enabled by default unless RDP_AUDIO_VIRTUAL_SINK=0)
+    bool useVirtualSink = true;
+    if (qEnvironmentVariableIsSet("RDP_AUDIO_VIRTUAL_SINK")) {
+        QString v = qEnvironmentVariable("RDP_AUDIO_VIRTUAL_SINK").trimmed().toLower();
+        if (v == "0" || v == "false" || v == "no") {
+            useVirtualSink = false;
+        }
+    }
+
+    if (useVirtualSink) {
+        // Save current default sink
+        QProcess proc;
+        proc.start("pactl", QStringList() << "get-default-sink");
+        if (proc.waitForFinished(1000)) {
+            QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+            if (!out.isEmpty() && out != "wayrdp_sink") {
+                m_originalDefaultSink = out;
+            }
+        }
+
+        // Load dedicated virtual null-sink for wayRDP at 100% (0 dB) unattenuated volume
+        proc.start("pactl", QStringList() << "load-module" << "module-null-sink"
+                                          << "sink_name=wayrdp_sink"
+                                          << "sink_properties=device.description=\"wayRDP_Audio\""
+                                          << QString("rate=%1").arg(sampleRate)
+                                          << "channels=2");
+        if (proc.waitForFinished(1000)) {
+            bool ok = false;
+            uint32_t id = QString::fromUtf8(proc.readAllStandardOutput()).trimmed().toUInt(&ok);
+            if (ok && id > 0) {
+                m_sinkModuleId = id;
+                QProcess::execute("pactl", QStringList() << "set-default-sink" << "wayrdp_sink");
+                qInfo() << "QtAudioController: Created dedicated virtual audio sink 'wayrdp_sink' (Module ID:"
+                        << m_sinkModuleId << ") - desktop audio routed cleanly to remote session";
+            }
+        }
+    }
+
     m_recording = true;
     m_workerThread = QThread::create([this]() {
         captureWorker();
@@ -35,6 +75,16 @@ void QtAudioController::stopAudioCapture()
             delete m_workerThread;
             m_workerThread = nullptr;
         }
+    }
+
+    if (m_sinkModuleId > 0) {
+        if (!m_originalDefaultSink.isEmpty()) {
+            QProcess::execute("pactl", QStringList() << "set-default-sink" << m_originalDefaultSink);
+            qInfo() << "QtAudioController: Restored host default audio sink to:" << m_originalDefaultSink;
+        }
+        QProcess::execute("pactl", QStringList() << "unload-module" << QString::number(m_sinkModuleId));
+        m_sinkModuleId = 0;
+        m_originalDefaultSink.clear();
     }
 }
 
@@ -67,7 +117,11 @@ void QtAudioController::captureWorker()
         }
     }
     if (!dev) {
-        dev = "@DEFAULT_MONITOR@";
+        if (m_sinkModuleId > 0) {
+            dev = "wayrdp_sink.monitor";
+        } else {
+            dev = "@DEFAULT_MONITOR@";
+        }
     }
 
     int error = 0;
