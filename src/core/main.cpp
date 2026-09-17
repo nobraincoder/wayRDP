@@ -19,6 +19,7 @@
 #include "display/IVirtualDisplayBackend.h"
 #include "display/VirtualDisplayFactory.h"
 #include "video/PipeWireStreamController.h"
+#include "audio/QtAudioController.h"
 #include "session/SessionLifecycleController.h"
 
 static int sigFd[2];
@@ -150,6 +151,7 @@ int main(int argc, char *argv[])
     auto virtualDisplay = VirtualDisplayFactory::createBackend(&app);
     PipeWireStreamController streamController;
     SessionLifecycleController lifecycleController;
+    QtAudioController audioController;
 
     // Session lifecycle (Sleep inhibit during active RDP session, optional auto-lock on disconnect)
     QObject::connect(&server, &RdpServer::clientConnected,
@@ -215,6 +217,14 @@ int main(int argc, char *argv[])
                      &server, &RdpServer::sendVideoFrame);
     QObject::connect(&streamController, &PipeWireStreamController::cursorShapeChanged,
                      &server, &RdpServer::updateCursorShape);
+
+    // Audio output channel wiring
+    QObject::connect(&server, &RdpServer::audioConfigured,
+                     &audioController, &QtAudioController::startAudioCapture);
+    QObject::connect(&audioController, &QtAudioController::audioSamplesReady,
+                     &server, &RdpServer::sendAudioSamples);
+    QObject::connect(&server, &RdpServer::clientDisconnected,
+                     &audioController, &QtAudioController::stopAudioCapture);
 
 
     // Wire Clipboard via KSystemClipboard (works reliably on Wayland without focused window)

@@ -76,6 +76,25 @@ RdpServer::RdpServer(QObject *parent)
             m_lastRttMs = rttMs;
         }
     });
+
+    // Initialize supported PCM audio formats (48000Hz and 44100Hz 16-bit stereo)
+    m_pcmFormats[0].wFormatTag = WAVE_FORMAT_PCM;
+    m_pcmFormats[0].nChannels = 2;
+    m_pcmFormats[0].nSamplesPerSec = 48000;
+    m_pcmFormats[0].nAvgBytesPerSec = 48000 * 2 * 2;
+    m_pcmFormats[0].nBlockAlign = 4;
+    m_pcmFormats[0].wBitsPerSample = 16;
+    m_pcmFormats[0].cbSize = 0;
+    m_pcmFormats[0].data = nullptr;
+
+    m_pcmFormats[1].wFormatTag = WAVE_FORMAT_PCM;
+    m_pcmFormats[1].nChannels = 2;
+    m_pcmFormats[1].nSamplesPerSec = 44100;
+    m_pcmFormats[1].nAvgBytesPerSec = 44100 * 2 * 2;
+    m_pcmFormats[1].nBlockAlign = 4;
+    m_pcmFormats[1].wBitsPerSample = 16;
+    m_pcmFormats[1].cbSize = 0;
+    m_pcmFormats[1].data = nullptr;
 }
 
 RdpServer::~RdpServer()
@@ -322,7 +341,10 @@ void RdpServer::stop()
     }
     {
         QMutexLocker locker(&m_audioMutex);
-        m_rdpsndContext = nullptr;
+        if (m_rdpsndContext) {
+            rdpsnd_server_context_free(m_rdpsndContext);
+            m_rdpsndContext = nullptr;
+        }
         m_audioReady = false;
     }
     
@@ -608,6 +630,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_HasHorizontalWheel, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_UnicodeInput, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_HasRelativeMouseEvent, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, TRUE);
 
     // Load SSL certificate and private key
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -771,7 +794,10 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     {
         QMutexLocker locker(&server->m_audioMutex);
         if (server->m_activePeer == peer) {
-            server->m_rdpsndContext = nullptr;
+            if (server->m_rdpsndContext) {
+                rdpsnd_server_context_free(server->m_rdpsndContext);
+                server->m_rdpsndContext = nullptr;
+            }
             server->m_audioReady = false;
         }
     }
@@ -969,6 +995,26 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             qInfo() << "Clipboard (cliprdr) channel initialized with file transfer enabled";
         } else {
             cliprdr_server_context_free(cliprdr);
+        }
+    }
+
+    // Initialize Audio Output (rdpsnd) channel
+    RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(ctx->vcm);
+    if (rdpsnd) {
+        rdpsnd->data = server;
+        rdpsnd->server_formats = server->m_pcmFormats;
+        rdpsnd->num_server_formats = 2;
+        rdpsnd->src_format = &server->m_pcmFormats[0];
+        rdpsnd->latency = 20;
+        rdpsnd->Activated = rdpsnd_activated;
+
+        if (rdpsnd->Initialize(rdpsnd, TRUE) == CHANNEL_RC_OK) {
+            QMutexLocker locker(&server->m_audioMutex);
+            server->m_rdpsndContext = rdpsnd;
+            qInfo() << "Audio output (rdpsnd) channel initialized";
+        } else {
+            qWarning() << "Failed to initialize rdpsnd channel";
+            rdpsnd_server_context_free(rdpsnd);
         }
     }
 
