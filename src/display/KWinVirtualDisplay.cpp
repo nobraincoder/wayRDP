@@ -1,5 +1,6 @@
 #include "display/KWinVirtualDisplay.h"
 #include "input/EiConnection.h"
+#include "video/CodecHooks.h"
 #include <cmath>
 #include <QDebug>
 #include <QDBusConnection>
@@ -951,7 +952,14 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
             bool shift = nudgeShifts[i];
             auto *timer = new QTimer(this);
             timer->setSingleShot(true);
-            connect(timer, &QTimer::timeout, this, [this, timer, baseX, baseY, deltaX, shift]() {
+            connect(timer, &QTimer::timeout, this, [this, timer, baseX, baseY, deltaX, shift, delay]() {
+                if (delay == 300) {
+                    // Right after Plasma's 250ms OpacityAnimator completes, request an IDR keyframe.
+                    // The 300ms nudge forces KWin to composite the clean desktop, and CodecHooks
+                    // ensures that frame is encoded as a pristine full-screen intra frame,
+                    // completely eliminating any lingering sub-pixel opacity ghosts.
+                    CodecHooks_requestKeyframe();
+                }
                 double targetX = shift ? (baseX + deltaX) : baseX;
                 sendPointerMotionAbsolute(targetX, baseY);
                 m_nudgeTimers.removeOne(timer);

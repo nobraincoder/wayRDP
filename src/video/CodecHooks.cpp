@@ -58,10 +58,22 @@ extern "C" Q_DECL_EXPORT int avcodec_open2(AVCodecContext *avctx, const AVCodec 
             av_dict_set(options, "bf", "0", 0);
             av_dict_set(options, "async_depth", "1", 0);
             av_dict_set(options, "idr_interval", "0", 0);
+            if (codec->name && strstr(codec->name, "vaapi")) {
+                // Enable low-power hardware encoding entrypoint (VAEntrypointEncSliceLP).
+                // On Intel Gen9+ GPUs, this routes encoding through the fixed-function VDEnc pipeline
+                // instead of shader execution units, boosting 4K encode throughput by up to 50%.
+                av_dict_set(options, "low_power", "1", 0);
+            }
         }
     }
 
-    return real_avcodec_open2(avctx, codec, options);
+    int ret = real_avcodec_open2(avctx, codec, options);
+    if (ret < 0 && codec && codec->name && strstr(codec->name, "vaapi") && options) {
+        qWarning() << "CodecHooks: avcodec_open2 failed with low_power=1, retrying with standard slice encoding...";
+        av_dict_set(options, "low_power", "0", 0);
+        ret = real_avcodec_open2(avctx, codec, options);
+    }
+    return ret;
 }
 
 extern "C" Q_DECL_EXPORT int avcodec_send_frame(AVCodecContext *avctx, const AVFrame *frame)

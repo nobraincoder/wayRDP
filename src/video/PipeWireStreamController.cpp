@@ -1,5 +1,8 @@
 #include "video/PipeWireStreamController.h"
+#include "video/CodecHooks.h"
 #include <QDebug>
+
+extern "C" bool Main_checkAndResetQueueSaturation(void);
 
 PipeWireStreamController::PipeWireStreamController(QObject *parent)
     : QObject(parent), m_stream(nullptr), m_framerate(60), m_quality(80), m_baseQuality(80), m_fpsFrameCount(0), m_lastFpsLogTime(0)
@@ -302,25 +305,39 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         }
     }
 
+    if (Main_checkAndResetQueueSaturation()) {
+        if (!qEnvironmentVariableIsSet("RDP_FPS") && m_framerate > 15) {
+            uint32_t lowerFps = std::max(15u, m_framerate - 5);
+            qWarning() << "PipeWireStreamController: Filter queue saturation detected! Immediately adapting framerate from"
+                       << m_framerate << "to" << lowerFps << "FPS to eliminate buffer lag and frame drops";
+            m_framerate = lowerFps;
+            m_activeFramerate = lowerFps;
+            if (m_stream && !m_isIdle) {
+                m_stream->setMaxFramerate(lowerFps);
+            }
+            CodecHooks_requestKeyframe();
+        }
+    }
+
     qint64 now = m_fpsTimer.elapsed();
     qint64 interPacketInterval = (m_lastPacketTime > 0) ? (now - m_lastPacketTime) : 0;
     m_lastPacketTime = now;
 
     // Dynamic Hardware Encoder Throughput Pacing:
     // If the GPU encoder is capable (modern GPUs like RTX, Iris Xe, Arc, RDNA), it encodes at 50-60 FPS effortlessly.
-    // If the GPU is older or saturated (e.g. Skylake GT2 capping at ~27 FPS), continuing to request 60 FPS
-    // causes KPipeWire's filter queue to drop frames.
-    // We observe real-time throughput during continuous motion: if the hardware cannot sustain > 35 FPS,
-    // we dynamically pace input framerate to 30 FPS to eliminate queue drops and buffer lag.
-    if (interPacketInterval > 0 && interPacketInterval <= 100) {
+    // If the GPU is older or saturated (e.g. Skylake GT2 capping at ~18-22 FPS), continuing to request 60 FPS
+    // causes KPipeWire's filter queue to drop frames and accumulate buffer latency.
+    // We observe real-time packet generation intervals during motion: if sustained throughput is < 40 FPS,
+    // we rapidly adapt input framerate within 250ms to match the GPU's actual hardware capability.
+    if (interPacketInterval > 0 && interPacketInterval <= 120) {
         m_motionBurstPackets++;
         qint64 burstElapsed = m_motionBurstTimer.elapsed();
-        if (burstElapsed >= 1500) {
+        if (burstElapsed >= 250 && m_motionBurstPackets >= 4) {
             double sustainedFps = (m_motionBurstPackets * 1000.0) / burstElapsed;
-            if (!m_autoAdaptedFps && !qEnvironmentVariableIsSet("RDP_FPS") && m_framerate >= 50) {
-                if (sustainedFps < 35.0 && sustainedFps >= 15.0) {
+            if (!m_autoAdaptedFps && !qEnvironmentVariableIsSet("RDP_FPS") && m_framerate >= 40) {
+                if (sustainedFps < 40.0 && sustainedFps >= 10.0) {
                     m_autoAdaptedFps = true;
-                    uint32_t adaptedFps = (sustainedFps >= 25.0) ? 30 : 25;
+                    uint32_t adaptedFps = qBound(15u, static_cast<uint32_t>(std::floor(sustainedFps)), 30u);
                     qInfo() << "PipeWireStreamController: Hardware encoder throughput limit detected ("
                             << QString::number(sustainedFps, 'f', 1)
                             << "FPS sustained under motion vs" << m_framerate << "FPS target)."
@@ -331,6 +348,7 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
                     if (m_stream && !m_isIdle) {
                         m_stream->setMaxFramerate(adaptedFps);
                     }
+                    CodecHooks_requestKeyframe();
                 }
             }
             m_motionBurstTimer.restart();
