@@ -1010,6 +1010,9 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     if (audioEnabled) {
         server->m_clientConfirmsBlocks = false;
         server->m_lastConfirmedBlock = 0;
+        server->m_lastLeftSample = 0;
+        server->m_lastRightSample = 0;
+        server->m_audioDroppedPrevious = false;
         RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(ctx->vcm);
         if (rdpsnd) {
             rdpsnd->data = server;
@@ -2243,7 +2246,40 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     size_t nframes = data.size() / 4;
     if (nframes == 0) return;
 
+    // Client flow control: if client sends WaveConfirm (like Windows mstsc),
+    // monitor in-flight blocks. If > 5 blocks (100ms) remain unconsumed on client,
+    // skip transmission so client's queue immediately drains rather than accumulating delay.
+    if (m_clientConfirmsBlocks) {
+        int inFlight = (m_rdpsndContext->block_no - m_lastConfirmedBlock.load() + 256) % 256;
+        if (inFlight > 5) {
+            m_audioDroppedPrevious = true;
+            m_audioFramesSent += nframes;
+            return;
+        }
+    }
+
     m_audioFramesSent += nframes;
+
+    QByteArray packetData = data;
+    int16_t* samples = reinterpret_cast<int16_t*>(packetData.data());
+    size_t totalSamples = packetData.size() / sizeof(int16_t);
+
+    // Packet Loss Concealment (PLC): if the previous packet was dropped to bound
+    // client latency, smoothly bridge the first 64 samples (1.3ms) from the last
+    // played sample value to completely eliminate audible clicks, pops, and crackle.
+    if (m_audioDroppedPrevious && totalSamples >= 128) {
+        for (size_t i = 0; i < 64; ++i) {
+            float alpha = static_cast<float>(i) / 64.0f;
+            samples[i * 2]     = static_cast<int16_t>(m_lastLeftSample  * (1.0f - alpha) + samples[i * 2]     * alpha);
+            samples[i * 2 + 1] = static_cast<int16_t>(m_lastRightSample * (1.0f - alpha) + samples[i * 2 + 1] * alpha);
+        }
+        m_audioDroppedPrevious = false;
+    }
+
+    if (totalSamples >= 2) {
+        m_lastLeftSample = samples[totalSamples - 2];
+        m_lastRightSample = samples[totalSamples - 1];
+    }
 
     // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),
     // SendSamples2 transmits raw PCM audio directly via atomic SNDC_WAVE2 PDUs without
@@ -2257,8 +2293,8 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     if (m_rdpsndContext->clientVersion >= 8 && m_rdpsndContext->SendSamples2) {
         UINT rc = m_rdpsndContext->SendSamples2(m_rdpsndContext,
                                                m_rdpsndContext->selected_client_format,
-                                               data.constData(),
-                                               data.size(),
+                                               packetData.constData(),
+                                               packetData.size(),
                                                timestamp16,
                                                timestamp32);
         if (rc == CHANNEL_RC_OK) {
@@ -2266,6 +2302,6 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
         }
     }
 
-    m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, timestamp16);
+    m_rdpsndContext->SendSamples(m_rdpsndContext, packetData.constData(), nframes, timestamp16);
 }
 

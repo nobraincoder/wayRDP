@@ -139,6 +139,9 @@ public:
     std::atomic<bool> m_audioReady{false};
     std::atomic<bool> m_clientConfirmsBlocks{false};
     std::atomic<uint8_t> m_lastConfirmedBlock{0};
+    int16_t m_lastLeftSample{0};
+    int16_t m_lastRightSample{0};
+    bool m_audioDroppedPrevious{false};
     std::atomic<bool> m_cliprdrReady{false};
     std::atomic<uint32_t> m_audioSampleRate{48000};
     std::atomic<uint64_t> m_audioFramesSent{0};
