@@ -764,13 +764,19 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         ctx->disp = nullptr;
     }
     
-    if (server->m_activePeer == peer) {
-        server->m_activePeer = nullptr;
-        server->m_gfxChannel.close();
-    }
+    bool wasActive = false;
     {
-        QMutexLocker locker(&server->m_cliprdrMutex);
+        QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer == peer) {
+            server->m_activePeer = nullptr;
+            wasActive = true;
+        }
+    }
+
+    if (wasActive) {
+        server->m_gfxChannel.close();
+        {
+            QMutexLocker locker(&server->m_cliprdrMutex);
             server->m_cliprdrContext = nullptr;
             server->m_cliprdrReady = false;
             for (auto& inf : server->m_incomingFiles) {
@@ -783,27 +789,25 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
             server->m_incomingFiles.clear();
             server->m_completedIncomingFilePaths.clear();
         }
-    }
-    if (server->m_networkAdaptTimer) {
-        QMetaObject::invokeMethod(server->m_networkAdaptTimer, "stop", Qt::QueuedConnection);
-    }
-    server->m_smoothedRttMs = 0;
-    server->m_lastRttMs = 0;
-    server->m_currentFps = 60;
-    server->m_currentQuality = 95;
-    {
-        QMutexLocker locker(&server->m_audioMutex);
-        if (server->m_activePeer == peer) {
+        if (server->m_networkAdaptTimer) {
+            QMetaObject::invokeMethod(server->m_networkAdaptTimer, "stop", Qt::QueuedConnection);
+        }
+        server->m_smoothedRttMs = 0;
+        server->m_lastRttMs = 0;
+        server->m_currentFps = 60;
+        server->m_currentQuality = 95;
+        {
+            QMutexLocker locker(&server->m_audioMutex);
             if (server->m_rdpsndContext) {
                 rdpsnd_server_context_free(server->m_rdpsndContext);
                 server->m_rdpsndContext = nullptr;
             }
             server->m_audioReady = false;
         }
+        server->m_cursorHidden = false;
+        server->m_cursorCache.clear();
+        server->m_lastUsedCursor = nullptr;
     }
-    server->m_cursorHidden = false;
-    server->m_cursorCache.clear();
-    server->m_lastUsedCursor = nullptr;
     
     if (ctx->activated) {
         ctx->activated = false;
@@ -1219,16 +1223,18 @@ void RdpServer::updateCursorShape(const QImage &image, const QPoint &hotspot)
     }
 
     // If currently displayed cursor is identical, update timestamp and return
-    if (m_lastUsedCursor && m_lastUsedCursor->image == image && m_lastUsedCursor->hotspot == hotspot) {
+    if (m_lastUsedCursor && m_lastUsedCursor->hotspot == hotspot &&
+        (m_lastUsedCursor->image.cacheKey() == image.cacheKey() || m_lastUsedCursor->image == image)) {
         m_lastUsedCursor->lastUsed = std::chrono::steady_clock::now();
         return;
     }
 
     auto updatePointer = peer->context->update->pointer;
 
-    // Check if cursor is already cached
-    auto itr = std::find_if(m_cursorCache.begin(), m_cursorCache.end(), [&image, &hotspot](const CursorCacheEntry &cached) {
-        return cached.hotspot == hotspot && cached.image == image;
+    // Check if cursor is already cached (fast-path via 64-bit cacheKey)
+    const qint64 targetCacheKey = image.cacheKey();
+    auto itr = std::find_if(m_cursorCache.begin(), m_cursorCache.end(), [&image, &hotspot, targetCacheKey](const CursorCacheEntry &cached) {
+        return cached.hotspot == hotspot && (cached.image.cacheKey() == targetCacheKey || cached.image == image);
     });
     if (itr != m_cursorCache.end()) {
         m_lastUsedCursor = &itr.value();

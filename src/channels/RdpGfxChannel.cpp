@@ -242,15 +242,27 @@ void RdpGfxChannel::startSubmissionThread()
             QueuedVideoFrame frame;
             {
                 std::unique_lock<std::mutex> lock(m_frameQueueMutex);
-                m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(5), [this]() {
-                    return !m_submissionRunning || (!m_frameQueue.empty() && hasInFlightCapacity());
+                m_frameQueueCond.wait(lock, [this]() {
+                    return !m_submissionRunning || !m_frameQueue.empty();
                 });
 
                 if (!m_submissionRunning) {
                     break;
                 }
 
-                if (m_frameQueue.empty() || !hasInFlightCapacity() || !m_gfxReady || m_outputSuppressed) {
+                if (!hasInFlightCapacity()) {
+                    m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(10), [this]() {
+                        return !m_submissionRunning || hasInFlightCapacity();
+                    });
+                    if (!m_submissionRunning) {
+                        break;
+                    }
+                    if (!hasInFlightCapacity()) {
+                        continue;
+                    }
+                }
+
+                if (m_frameQueue.empty() || !m_gfxReady || m_outputSuppressed) {
                     continue;
                 }
 
