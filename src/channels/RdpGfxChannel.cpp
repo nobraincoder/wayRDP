@@ -206,29 +206,20 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
     }
 
     if (m_waitingForKeyFrame) {
-        if (!isKeyFrame && m_droppedFramesWaitingForKey.load() < 8) {
-            m_droppedFramesWaitingForKey++;
+        if (!isKeyFrame) {
             return;
         }
         m_waitingForKeyFrame = false;
-        m_droppedFramesWaitingForKey = 0;
-        if (isKeyFrame) {
-            qInfo() << "RdpGfxChannel: Received clean IDR keyframe! Resuming video output.";
-        } else {
-            qInfo() << "RdpGfxChannel: Keyframe timeout reached, resuming video output.";
-        }
+        qInfo() << "RdpGfxChannel: Received clean IDR keyframe after surface reset! Resuming video output.";
     }
 
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
         if (isKeyFrame) {
             m_frameQueue.clear();
-        } else if (m_frameQueue.size() > 8) {
-            m_frameQueue.clear();
-            m_waitingForKeyFrame = true;
-            m_droppedFramesWaitingForKey = 0;
-            emit keyFrameNeeded();
-            return;
+        } else if (m_frameQueue.size() > 30) {
+            // Drop oldest delta frame if queue builds up, preserving the newest desktop state
+            m_frameQueue.pop_front();
         }
         m_frameQueue.push_back({data, isKeyFrame});
     }
@@ -289,12 +280,12 @@ void RdpGfxChannel::stopSubmissionThread()
 bool RdpGfxChannel::hasInFlightCapacity()
 {
     std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    if (m_pendingFrames.size() < 4) {
+    if (m_pendingFrames.size() < 6) {
         return true;
     }
     const auto now = std::chrono::steady_clock::now();
     if (!m_pendingFrameTimestamps.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 60) {
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 80) {
         m_pendingFrames.clear();
         m_pendingFrameTimestamps.clear();
         return true;
