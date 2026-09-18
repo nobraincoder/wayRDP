@@ -76,6 +76,10 @@ private:
     double m_accumulatedX{0.0};
     double m_accumulatedY{0.0};
     std::chrono::steady_clock::time_point m_lastAxisTime;
+
+    // Last known pointer position for post-action repaint nudges
+    double m_lastPointerX{0.0};
+    double m_lastPointerY{0.0};
 };
 
 #endif // KWINVIRTUALDISPLAY_H

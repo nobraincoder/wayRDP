@@ -177,7 +177,7 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    m_stream->setMaxPendingFrames(50);
+    m_stream->setMaxPendingFrames(100);
 
     const auto suggested = m_stream->suggestedEncoders();
     qInfo() << "PipeWireStreamController: Video encoder configured with quality:" << m_quality << "% | Suggested encoders:" << suggested;

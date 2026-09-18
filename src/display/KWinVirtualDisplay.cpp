@@ -844,6 +844,9 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
     if (m_sessionPath.isEmpty() || !m_displayActive)
         return;
 
+    m_lastPointerX = x;
+    m_lastPointerY = y;
+
     if (m_eiConnection && m_eiConnection->hasPointer()) {
         m_eiConnection->sendPointerMotionAbsolute(x, y, m_requestedSize, m_streamMappingId);
         return;
@@ -877,27 +880,41 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
 
     if (m_eiConnection && m_eiConnection->hasPointer()) {
         m_eiConnection->sendPointerButton(button, state);
-        return;
+    } else {
+        QDBusMessage message = QDBusMessage::createMethodCall(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.RemoteDesktop",
+            "NotifyPointerButton"
+        );
+
+        QVariantMap options;
+        message.setArguments({QDBusObjectPath(m_sessionPath), options, button, state});
+        QDBusPendingCall pcall = QDBusConnection::sessionBus().asyncCall(message);
+        QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(pcall, this);
+        connect(watcher, &QDBusPendingCallWatcher::finished, this, [button, state](QDBusPendingCallWatcher *w) {
+            QDBusPendingReply<> reply = *w;
+            w->deleteLater();
+            if (reply.isError()) {
+                qWarning() << "NotifyPointerButton DBus error:" << reply.error().message() << "button:" << button << "state:" << state;
+            }
+        });
     }
 
-    QDBusMessage message = QDBusMessage::createMethodCall(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.RemoteDesktop",
-        "NotifyPointerButton"
-    );
-
-    QVariantMap options;
-    message.setArguments({QDBusObjectPath(m_sessionPath), options, button, state});
-    QDBusPendingCall pcall = QDBusConnection::sessionBus().asyncCall(message);
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(pcall, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [button, state](QDBusPendingCallWatcher *w) {
-        QDBusPendingReply<> reply = *w;
-        w->deleteLater();
-        if (reply.isError()) {
-            qWarning() << "NotifyPointerButton DBus error:" << reply.error().message() << "button:" << button << "state:" << state;
-        }
-    });
+    // When releasing a mouse button (e.g. desktop area selection rubberband, dragging window/files,
+    // closing dropdown menus), Plasma/apps tear down the overlay/selection box.
+    // If the user stops moving the mouse immediately, KWin Wayland may not generate a follow-up
+    // damage frame, leaving the selection box lingering.
+    // Nudge KWin with a zero-delta motion event after 50ms and 150ms to ensure the post-release
+    // clean frame is always rendered and transmitted immediately.
+    if (state == 0) {
+        QTimer::singleShot(50, this, [this]() {
+            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
+        });
+        QTimer::singleShot(150, this, [this]() {
+            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
+        });
+    }
 }
 
 void KWinVirtualDisplay::doSendAxis(double dx, double dy)
