@@ -63,6 +63,14 @@ extern "C" Q_DECL_EXPORT int avcodec_open2(AVCodecContext *avctx, const AVCodec 
                 // On Intel Gen9+ GPUs, this routes encoding through the fixed-function VDEnc pipeline
                 // instead of shader execution units, boosting 4K encode throughput by up to 50%.
                 av_dict_set(options, "low_power", "1", 0);
+            } else if (codec->name && strstr(codec->name, "nvenc")) {
+                // Low-latency tuning for NVIDIA GPUs
+                av_dict_set(options, "tune", "ll", 0);
+                av_dict_set(options, "zerolatency", "1", 0);
+            } else if (codec->name && strstr(codec->name, "x264")) {
+                // Zero-latency tuning for software encoding
+                av_dict_set(options, "tune", "zerolatency", 0);
+                av_dict_set(options, "preset", "ultrafast", 0);
             }
         }
     }

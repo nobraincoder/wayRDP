@@ -22,6 +22,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFileInfo>
+#include <QStandardPaths>
 
 QDBusArgument &operator<<(QDBusArgument &arg, const PortalStream &stream) {
     arg.beginStructure();
@@ -489,12 +490,22 @@ static QProcessEnvironment getKScreenEnvironment()
         env.insert("QT_QPA_PLATFORM", "wayland");
     }
     if (!env.contains("XDG_RUNTIME_DIR")) {
-        env.insert("XDG_RUNTIME_DIR", QString("/run/user/%1").arg(getuid()));
+        QString runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        if (runtimeDir.isEmpty()) {
+            runtimeDir = QString("/run/user/%1").arg(getuid());
+        }
+        env.insert("XDG_RUNTIME_DIR", runtimeDir);
     }
     if (!env.contains("WAYLAND_DISPLAY")) {
-        QString waylandSocket = QString("/run/user/%1/wayland-0").arg(getuid());
-        if (QFile::exists(waylandSocket)) {
+        QString runtimeDir = env.value("XDG_RUNTIME_DIR");
+        if (QFile::exists(runtimeDir + "/wayland-0")) {
             env.insert("WAYLAND_DISPLAY", "wayland-0");
+        } else {
+            QDir dir(runtimeDir);
+            QStringList sockets = dir.entryList(QStringList() << "wayland-*", QDir::System | QDir::Files);
+            if (!sockets.isEmpty()) {
+                env.insert("WAYLAND_DISPLAY", sockets.first());
+            }
         }
     }
     return env;

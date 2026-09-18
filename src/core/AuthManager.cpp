@@ -97,9 +97,11 @@ bool AuthManager::authenticateUser(const QString& username, const QString& passw
     PamUserData userdata{ username.toUtf8(), password.toUtf8() };
     struct pam_conv conv = { pamConversation, &userdata };
 
-    // Prefer login or krdp PAM service
+    // Prefer wayrdp, krdp, krdpserver, or login PAM service
     const char* pamService = "login";
-    if (QFile::exists("/etc/pam.d/krdp")) {
+    if (QFile::exists("/etc/pam.d/wayrdp")) {
+        pamService = "wayrdp";
+    } else if (QFile::exists("/etc/pam.d/krdp")) {
         pamService = "krdp";
     } else if (QFile::exists("/etc/pam.d/krdpserver")) {
         pamService = "krdpserver";

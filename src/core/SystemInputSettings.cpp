@@ -7,14 +7,25 @@
 #include <QDBusInterface>
 #include <QDBusReply>
 #include <QDebug>
+#include <QStandardPaths>
 #include <linux/input-event-codes.h>
+
+static QString getKdeConfigDirectory()
+{
+    QString configDir = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    if (configDir.isEmpty()) {
+        configDir = QDir::homePath() + "/.config";
+    }
+    return configDir;
+}
 
 SystemInputSettings::SystemInputSettings(QObject *parent)
     : QObject(parent)
 {
     m_watcher = new QFileSystemWatcher(this);
-    QString configPath = QDir::homePath() + "/.config/kcminputrc";
-    QString globalsPath = QDir::homePath() + "/.config/kdeglobals";
+    QString configDir = getKdeConfigDirectory();
+    QString configPath = configDir + "/kcminputrc";
+    QString globalsPath = configDir + "/kdeglobals";
     if (QFile::exists(configPath)) {
         m_watcher->addPath(configPath);
     }
@@ -116,7 +127,7 @@ void SystemInputSettings::queryKWinDBus()
 
 void SystemInputSettings::parseConfigFile()
 {
-    QString configPath = QDir::homePath() + "/.config/kcminputrc";
+    QString configPath = getKdeConfigDirectory() + "/kcminputrc";
     QFile file(configPath);
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream in(&file);
@@ -170,7 +181,7 @@ void SystemInputSettings::parseConfigFile()
     }
 
     // Check kdeglobals for system cursor size if not set in kcminputrc
-    QString globalsPath = QDir::homePath() + "/.config/kdeglobals";
+    QString globalsPath = getKdeConfigDirectory() + "/kdeglobals";
     QFile globalsFile(globalsPath);
     if (globalsFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream in(&globalsFile);

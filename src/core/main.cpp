@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <QSocketNotifier>
+#include <QStandardPaths>
 #include <openssl/provider.h>
 #include "core/RdpServer.h"
 #include "display/IVirtualDisplayBackend.h"
@@ -78,9 +79,13 @@ static void ensurePermissionsAuthorized()
 
 static void loadEnvironmentConfig()
 {
-    QString configPath = QDir::homePath() + "/.config/wayrdp.env";
+    QString configDir = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    if (configDir.isEmpty()) {
+        configDir = QDir::homePath() + "/.config";
+    }
+    QString configPath = configDir + "/wayrdp.env";
     if (!QFile::exists(configPath)) {
-        QString legacyPath = QDir::homePath() + "/.config/kde-virtual-rdp.env";
+        QString legacyPath = configDir + "/kde-virtual-rdp.env";
         if (QFile::exists(legacyPath)) {
             configPath = legacyPath;
         }
@@ -122,9 +127,21 @@ int main(int argc, char *argv[])
     loadEnvironmentConfig();
 
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
-        QString waylandSocket = QString("/run/user/%1/wayland-0").arg(getuid());
-        if (QFile::exists(waylandSocket)) {
+        QString runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
+        if (runtimeDir.isEmpty()) {
+            runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        }
+        if (runtimeDir.isEmpty()) {
+            runtimeDir = QString("/run/user/%1").arg(getuid());
+        }
+        if (QFile::exists(runtimeDir + "/wayland-0")) {
             qputenv("WAYLAND_DISPLAY", "wayland-0");
+        } else {
+            QDir dir(runtimeDir);
+            QStringList sockets = dir.entryList(QStringList() << "wayland-*", QDir::System | QDir::Files);
+            if (!sockets.isEmpty()) {
+                qputenv("WAYLAND_DISPLAY", sockets.first().toUtf8());
+            }
         }
     }
 
@@ -144,7 +161,25 @@ int main(int argc, char *argv[])
             qputenv("KPIPEWIRE_FORCE_ENCODER", encoder.toUtf8());
         }
     } else if (qEnvironmentVariableIsEmpty("KPIPEWIRE_FORCE_ENCODER")) {
-        qputenv("KPIPEWIRE_FORCE_ENCODER", "h264_vaapi");
+        // Automatically probe hardware acceleration availability
+        bool hasNvidia = (QFile::exists("/dev/nvidia0") || QFile::exists("/dev/nvidiactl"));
+        bool hasDri = false;
+        QDir driDir("/dev/dri");
+        if (driDir.exists()) {
+            const QStringList renders = driDir.entryList(QStringList() << "renderD*", QDir::System | QDir::Files);
+            hasDri = !renders.isEmpty();
+        }
+
+        if (hasNvidia) {
+            qInfo() << "Hardware auto-detection: Detected NVIDIA GPU node, selecting h264_nvenc";
+            qputenv("KPIPEWIRE_FORCE_ENCODER", "h264_nvenc");
+        } else if (hasDri) {
+            qInfo() << "Hardware auto-detection: Detected DRI render node, selecting h264_vaapi";
+            qputenv("KPIPEWIRE_FORCE_ENCODER", "h264_vaapi");
+        } else {
+            qInfo() << "Hardware auto-detection: No hardware encoder node detected, falling back to libx264";
+            qputenv("KPIPEWIRE_FORCE_ENCODER", "libx264");
+        }
     }
 
     QGuiApplication app(argc, argv);
