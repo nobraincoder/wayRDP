@@ -86,8 +86,6 @@ void PipeWireStreamController::setEncodingParameters(uint32_t fps, int quality)
         if (ok && envFps >= 10 && envFps <= 120) {
             fps = envFps;
         }
-    } else if (!m_targetResolution.isEmpty() && m_targetResolution.width() * m_targetResolution.height() > 3500000) {
-        fps = std::min(fps, 30u);
     }
 
     m_activeFramerate = fps;
@@ -129,24 +127,18 @@ void PipeWireStreamController::setQuality(int quality)
 
 void PipeWireStreamController::setTargetResolution(const QSize &size)
 {
-    m_targetResolution = size;
-    if (size.width() * size.height() > 3500000 && m_framerate > 30) {
-        if (!qEnvironmentVariableIsSet("RDP_FPS")) {
-            m_framerate = 30;
-            m_activeFramerate = 30;
-            if (m_stream && !m_isIdle) {
-                m_stream->setMaxFramerate(30);
-            }
-        }
+    if (m_targetResolution != size) {
+        m_autoAdaptedFps = false; // Re-evaluate encoder throughput on resolution change
     }
+    m_targetResolution = size;
 }
 
 void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize &size)
 {
-    if (!qEnvironmentVariableIsSet("RDP_FPS") && size.width() * size.height() > 3500000) {
-        m_framerate = std::min(m_framerate, 30u);
-        m_activeFramerate = std::min(m_activeFramerate, 30u);
-    }
+    m_autoAdaptedFps = false;
+    m_motionBurstTimer.restart();
+    m_motionBurstPackets = 0;
+    m_lastPacketTime = 0;
 
     qInfo() << "PipeWireStreamController: Starting encoding for nodeId:" << nodeId << "fd:" << fd << "size:" << size
             << "with fps:" << m_framerate << "quality:" << m_quality;
@@ -307,6 +299,45 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         if (m_stream) {
             m_stream->setMaxFramerate(m_activeFramerate);
         }
+    }
+
+    qint64 now = m_fpsTimer.elapsed();
+    qint64 interPacketInterval = (m_lastPacketTime > 0) ? (now - m_lastPacketTime) : 0;
+    m_lastPacketTime = now;
+
+    // Dynamic Hardware Encoder Throughput Pacing:
+    // If the GPU encoder is capable (modern GPUs like RTX, Iris Xe, Arc, RDNA), it encodes at 50-60 FPS effortlessly.
+    // If the GPU is older or saturated (e.g. Skylake GT2 capping at ~27 FPS), continuing to request 60 FPS
+    // causes KPipeWire's filter queue to drop frames.
+    // We observe real-time throughput during continuous motion: if the hardware cannot sustain > 35 FPS,
+    // we dynamically pace input framerate to 30 FPS to eliminate queue drops and buffer lag.
+    if (interPacketInterval > 0 && interPacketInterval <= 100) {
+        m_motionBurstPackets++;
+        qint64 burstElapsed = m_motionBurstTimer.elapsed();
+        if (burstElapsed >= 1500) {
+            double sustainedFps = (m_motionBurstPackets * 1000.0) / burstElapsed;
+            if (!m_autoAdaptedFps && !qEnvironmentVariableIsSet("RDP_FPS") && m_framerate >= 50) {
+                if (sustainedFps < 35.0 && sustainedFps >= 15.0) {
+                    m_autoAdaptedFps = true;
+                    uint32_t adaptedFps = (sustainedFps >= 25.0) ? 30 : 25;
+                    qInfo() << "PipeWireStreamController: Hardware encoder throughput limit detected ("
+                            << QString::number(sustainedFps, 'f', 1)
+                            << "FPS sustained under motion vs" << m_framerate << "FPS target)."
+                            << "Dynamically pacing input framerate to" << adaptedFps
+                            << "FPS to eliminate buffer lag and frame drops on this GPU.";
+                    m_activeFramerate = adaptedFps;
+                    m_framerate = adaptedFps;
+                    if (m_stream && !m_isIdle) {
+                        m_stream->setMaxFramerate(adaptedFps);
+                    }
+                }
+            }
+            m_motionBurstTimer.restart();
+            m_motionBurstPackets = 0;
+        }
+    } else {
+        m_motionBurstTimer.restart();
+        m_motionBurstPackets = 0;
     }
 
     // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)

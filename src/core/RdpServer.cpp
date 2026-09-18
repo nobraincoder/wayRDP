@@ -345,13 +345,7 @@ static UINT disp_monitor_layout(DispServerContext* context, const DISPLAY_CONTRO
 
     server->m_clientScale = scale;
 
-    uint32_t totalPixels = monitorSize.width() * monitorSize.height();
     uint32_t maxFps = 60;
-    if (totalPixels > 3500000) {
-        maxFps = 30;
-        qInfo() << "DisplayControl: Ultra-HiDPI canvas detected (" << monitorSize.width() << "x" << monitorSize.height()
-                << "), capping framerate to 30 FPS for encoder stability";
-    }
     if (qEnvironmentVariableIsSet("RDP_FPS")) {
         bool ok = false;
         int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
@@ -868,15 +862,7 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             break;
     }
 
-    uint32_t totalPixels = width * height;
     uint32_t maxFps = 60;
-    if (totalPixels > 3500000) { // e.g. 3200x2000 (6.4MP), 4K (8.3MP)
-        maxFps = 30;
-        qInfo() << "Ultra-HiDPI resolution detected (" << width << "x" << height << "="
-                << QString::number(totalPixels / 1000000.0, 'f', 1)
-                << "MP), capping maximum framerate to 30 FPS for hardware encoder stability";
-    }
-
     if (qEnvironmentVariableIsSet("RDP_FPS")) {
         bool ok = false;
         int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
