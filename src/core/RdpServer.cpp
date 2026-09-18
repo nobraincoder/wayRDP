@@ -2243,18 +2243,6 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     size_t nframes = data.size() / 4;
     if (nframes == 0) return;
 
-    // Client flow control: if client sends WaveConfirm (like Windows mstsc),
-    // monitor in-flight blocks. If > 7 blocks (140ms) remain unconsumed on client,
-    // skip transmission so client's queue immediately drains rather than accumulating delay,
-    // while giving Windows MSTSC's native ~100ms WASAPI buffer plenty of headroom without drops.
-    if (m_clientConfirmsBlocks) {
-        int inFlight = (m_rdpsndContext->block_no - m_lastConfirmedBlock.load() + 256) % 256;
-        if (inFlight > 7) {
-            m_audioFramesSent += nframes;
-            return;
-        }
-    }
-
     m_audioFramesSent += nframes;
 
     // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),

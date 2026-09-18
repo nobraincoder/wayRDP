@@ -30,6 +30,21 @@ void QtAudioController::startAudioCapture(uint32_t sampleRate)
     }
 
     if (useVirtualSink) {
+        // Ensure any pre-existing wayrdp_sink modules from prior crashes or runs are cleanly removed
+        QProcess cleanupProc;
+        cleanupProc.start("pactl", QStringList() << "list" << "modules" << "short");
+        if (cleanupProc.waitForFinished(1000)) {
+            QString out = QString::fromUtf8(cleanupProc.readAllStandardOutput());
+            for (const QString &line : out.split('\n')) {
+                if (line.contains("wayrdp_sink")) {
+                    QString modId = line.section('\t', 0, 0).trimmed();
+                    if (!modId.isEmpty()) {
+                        QProcess::execute("pactl", QStringList() << "unload-module" << modId);
+                    }
+                }
+            }
+        }
+
         // Save current default sink
         QProcess proc;
         proc.start("pactl", QStringList() << "get-default-sink");
