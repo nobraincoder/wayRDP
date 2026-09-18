@@ -55,11 +55,13 @@ void QtAudioController::startAudioCapture(uint32_t sampleRate)
             }
         }
 
-        // Load dedicated virtual null-sink for wayRDP at 100% (0 dB) unattenuated volume
+        // Load dedicated virtual null-sink for wayRDP in s16le (matching our capture format)
+        // to avoid PipeWire float32→s16le conversion that introduces dithering artifacts.
         proc.start("pactl", QStringList() << "load-module" << "module-null-sink"
                                           << "sink_name=wayrdp_sink"
                                           << "sink_properties=device.description=\"wayRDP_Audio\""
                                           << QString("rate=%1").arg(sampleRate)
+                                          << "format=s16le"
                                           << "channels=2");
         if (proc.waitForFinished(1000)) {
             bool ok = false;
@@ -117,7 +119,7 @@ void QtAudioController::captureWorker()
     uint32_t chunkSize = (rate * 20 / 1000) * 4;
 
     pa_buffer_attr attr;
-    attr.maxlength = chunkSize * 4; // 80ms max buffer prevents PipeWire from queueing stale audio while avoiding underruns
+    attr.maxlength = chunkSize * 10; // 200ms max buffer — matches our relaxed flush threshold
     attr.tlength = static_cast<uint32_t>(-1);
     attr.prebuf = static_cast<uint32_t>(-1);
     attr.minreq = static_cast<uint32_t>(-1);
@@ -177,11 +179,12 @@ void QtAudioController::captureWorker()
             break;
         }
 
-        // Real-time synchronization check: if PipeWire buffer latency exceeds 80ms (e.g. after
-        // a network keyframe burst), flush the stale backlog immediately so audio never drifts
-        // or delays playback
+        // Real-time synchronization: flush stale audio backlog only if buffer latency
+        // exceeds 200ms, which indicates a significant drift (e.g. after a network
+        // keyframe burst). The previous 80ms threshold was too aggressive and caused
+        // audible gaps that made the audio sound choppy or "different".
         pa_usec_t latency = pa_simple_get_latency(s, &error);
-        if (latency > 80000) {
+        if (latency > 200000) {
             pa_simple_flush(s, &error);
         }
 

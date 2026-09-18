@@ -2290,11 +2290,13 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     if (nframes == 0) return;
 
     // Client flow control: if client sends WaveConfirm (like Windows mstsc),
-    // monitor in-flight blocks. If > 5 blocks (100ms) remain unconsumed on client,
-    // skip transmission so client's queue immediately drains rather than accumulating delay.
+    // monitor in-flight blocks. If > 10 blocks (200ms) remain unconsumed on client,
+    // skip transmission so client's queue drains rather than accumulating delay.
+    // Previous threshold of 5 (100ms) was too aggressive and caused frequent drops
+    // that made audio sound choppy or different from the source.
     if (m_clientConfirmsBlocks) {
         int inFlight = (m_rdpsndContext->block_no - m_lastConfirmedBlock.load() + 256) % 256;
-        if (inFlight > 5) {
+        if (inFlight > 10) {
             m_audioDroppedPrevious = true;
             m_audioFramesSent += nframes;
             return;
