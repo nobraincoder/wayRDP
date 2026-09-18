@@ -172,6 +172,15 @@ int main(int argc, char *argv[])
                          streamController.onClientActivity();
                          CodecHooks_requestKeyframe();
                          server.purgeStaleFrames();
+                         // KScreenLocker teardown takes 150-250ms for KWin to finish compositing the unlocked desktop.
+                         // Schedule a second purge and keyframe request after 250ms to ensure the clean desktop is transmitted
+                         // and eradicate any lingering lockscreen frame from the hardware encoder pipeline.
+                         QTimer::singleShot(250, &server, [&server, &streamController]() {
+                             qInfo() << "Main: Post-unlock stabilization timer fired: requesting clean desktop keyframe";
+                             streamController.onClientActivity();
+                             server.purgeStaleFrames();
+                             CodecHooks_requestKeyframe();
+                         });
                      });
     QObject::connect(&lifecycleController, &SessionLifecycleController::sessionLocked,
                      [&virtualDisplay, &server]() {

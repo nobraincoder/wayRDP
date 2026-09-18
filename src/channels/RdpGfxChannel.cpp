@@ -1,4 +1,5 @@
 #include "channels/RdpGfxChannel.h"
+#include "video/CodecHooks.h"
 #include <QDebug>
 #include <QDateTime>
 #include <winpr/wtsapi.h>
@@ -137,6 +138,7 @@ void RdpGfxChannel::purgeStaleFrames()
         m_pendingFrameTimestamps.clear();
     }
     m_waitingForKeyFrame = true;
+    CodecHooks_requestKeyframe();
     m_frameQueueCond.notify_all();
     qInfo() << "RdpGfxChannel: Purged stale frame queue, waiting for clean IDR keyframe";
 }
@@ -211,6 +213,7 @@ void RdpGfxChannel::resetSurface(UINT32 width, UINT32 height)
     m_gfxReady = true;
     m_waitingForKeyFrame = true;
     m_droppedFramesWaitingForKey = 0;
+    CodecHooks_requestKeyframe();
 
     qInfo() << "RdpGfxChannel: Surface configured successfully for" << width << "x" << height;
 }
@@ -231,16 +234,15 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
 
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
-        if (isKeyFrame) {
-            m_frameQueue.clear();
-        } else if (m_frameQueue.size() > 30) {
+        if (m_frameQueue.size() > 30) {
             // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
             // In H.264, dropping a delta frame breaks the reference chain in mstsc,
             // permanently freezing the client video stream until an IDR frame arrives.
             m_frameQueue.clear();
             m_waitingForKeyFrame = true;
+            CodecHooks_requestKeyframe();
             qWarning() << "RdpGfxChannel: Frame queue overflow (" << m_frameQueue.size()
-                       << "frames), cleared queue and waiting for IDR keyframe to prevent client freeze";
+                       << "frames), cleared queue and requested IDR keyframe to resync stream";
             return;
         }
         m_frameQueue.push_back({data, isKeyFrame});

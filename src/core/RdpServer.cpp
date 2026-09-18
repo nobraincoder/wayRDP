@@ -344,6 +344,27 @@ static UINT disp_monitor_layout(DispServerContext* context, const DISPLAY_CONTRO
             << "desktop scale:" << desktopScale << "effective scale:" << scale;
 
     server->m_clientScale = scale;
+
+    uint32_t totalPixels = monitorSize.width() * monitorSize.height();
+    uint32_t maxFps = 60;
+    if (totalPixels > 3500000) {
+        maxFps = 30;
+        qInfo() << "DisplayControl: Ultra-HiDPI canvas detected (" << monitorSize.width() << "x" << monitorSize.height()
+                << "), capping framerate to 30 FPS for encoder stability";
+    }
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            maxFps = envFps;
+        }
+    }
+    server->m_maxTargetFps = maxFps;
+    if (server->m_currentFps.load() > maxFps) {
+        server->m_currentFps = maxFps;
+        emit server->clientEncodingConfigured(maxFps, server->m_currentQuality.load());
+    }
+
     emit server->requestedResolutionChanged(monitorSize, scale);
 
     return CHANNEL_RC_OK;
@@ -847,6 +868,28 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             break;
     }
 
+    uint32_t totalPixels = width * height;
+    uint32_t maxFps = 60;
+    if (totalPixels > 3500000) { // e.g. 3200x2000 (6.4MP), 4K (8.3MP)
+        maxFps = 30;
+        qInfo() << "Ultra-HiDPI resolution detected (" << width << "x" << height << "="
+                << QString::number(totalPixels / 1000000.0, 'f', 1)
+                << "MP), capping maximum framerate to 30 FPS for hardware encoder stability";
+    }
+
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            maxFps = envFps;
+            qInfo() << "Using user configured RDP_FPS:" << maxFps;
+        }
+    }
+
+    server->m_maxTargetFps = maxFps;
+    targetFps = std::min(targetFps, maxFps);
+    server->m_currentFps = targetFps;
+
     if (qEnvironmentVariableIsSet("RDP_QUALITY")) {
         bool ok = false;
         int envQuality = qEnvironmentVariableIntValue("RDP_QUALITY", &ok);
@@ -857,6 +900,7 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     } else {
         targetQuality = 95;
     }
+    server->m_currentQuality = targetQuality;
 
     emit server->clientEncodingConfigured(targetFps, targetQuality);
     
@@ -1211,6 +1255,15 @@ void RdpServer::checkNetworkAdaptation()
     } else {
         targetFps = 20;
         targetQuality = 50;
+    }
+
+    targetFps = std::min(targetFps, m_maxTargetFps.load());
+    if (qEnvironmentVariableIsSet("RDP_QUALITY")) {
+        bool ok = false;
+        int envQuality = qEnvironmentVariableIntValue("RDP_QUALITY", &ok);
+        if (ok && envQuality >= 10 && envQuality <= 100) {
+            targetQuality = envQuality;
+        }
     }
 
     if (targetFps != m_currentFps.load() || targetQuality != m_currentQuality.load()) {

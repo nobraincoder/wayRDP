@@ -133,6 +133,7 @@ public:
     std::atomic<int64_t> m_lastRttMs{0};
     QTimer* m_networkAdaptTimer{nullptr};
     std::atomic<uint32_t> m_currentFps{60};
+    std::atomic<uint32_t> m_maxTargetFps{60};
     std::atomic<int> m_currentQuality{95};
     std::atomic<int64_t> m_smoothedRttMs{0};
 

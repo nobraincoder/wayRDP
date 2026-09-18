@@ -13,6 +13,14 @@ PipeWireStreamController::PipeWireStreamController(QObject *parent)
         }
     }
 
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            m_framerate = envFps;
+        }
+    }
+
     if (qEnvironmentVariableIsSet("RDP_MOTION_QUALITY_DELTA")) {
         bool ok = false;
         int delta = qEnvironmentVariableIntValue("RDP_MOTION_QUALITY_DELTA", &ok);
@@ -72,6 +80,16 @@ void PipeWireStreamController::updateEffectiveQuality()
 
 void PipeWireStreamController::setEncodingParameters(uint32_t fps, int quality)
 {
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            fps = envFps;
+        }
+    } else if (!m_targetResolution.isEmpty() && m_targetResolution.width() * m_targetResolution.height() > 3500000) {
+        fps = std::min(fps, 30u);
+    }
+
     m_activeFramerate = fps;
     if (!m_isIdle) {
         m_framerate = fps;
@@ -112,10 +130,24 @@ void PipeWireStreamController::setQuality(int quality)
 void PipeWireStreamController::setTargetResolution(const QSize &size)
 {
     m_targetResolution = size;
+    if (size.width() * size.height() > 3500000 && m_framerate > 30) {
+        if (!qEnvironmentVariableIsSet("RDP_FPS")) {
+            m_framerate = 30;
+            m_activeFramerate = 30;
+            if (m_stream && !m_isIdle) {
+                m_stream->setMaxFramerate(30);
+            }
+        }
+    }
 }
 
 void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize &size)
 {
+    if (!qEnvironmentVariableIsSet("RDP_FPS") && size.width() * size.height() > 3500000) {
+        m_framerate = std::min(m_framerate, 30u);
+        m_activeFramerate = std::min(m_activeFramerate, 30u);
+    }
+
     qInfo() << "PipeWireStreamController: Starting encoding for nodeId:" << nodeId << "fd:" << fd << "size:" << size
             << "with fps:" << m_framerate << "quality:" << m_quality;
 
@@ -179,9 +211,9 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    // Bounded pending frames buffer: 8 frames (~133ms at 60 FPS) prevents hoarding stale frames
+    // Bounded pending frames buffer: 3 frames (~100ms at 30 FPS) prevents hoarding stale frames
     // during throttled idle states and eliminates "Filter queue is full" drop storms.
-    int maxPending = 8;
+    int maxPending = 3;
     bool okPending = false;
     int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
     if (okPending && envPending >= 3) {
@@ -278,8 +310,7 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
     }
 
     // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)
-    // Non-keyframe delta packets > 40KB at 60 FPS indicate heavy motion
-    if (!packet.isKeyFrame() && data.size() > 40 * 1024) {
+    if (m_motionQualityDelta > 0 && !packet.isKeyFrame() && data.size() > 40 * 1024) {
         onMotionActivity();
     }
 

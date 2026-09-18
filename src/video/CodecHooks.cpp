@@ -42,7 +42,7 @@ extern "C" Q_DECL_EXPORT int avcodec_open2(AVCodecContext *avctx, const AVCodec 
     }
 
     if (codec && avctx) {
-        int gopSize = 30;
+        int gopSize = 120;
         bool ok = false;
         int envGop = qEnvironmentVariable("RDP_GOP_SIZE").toInt(&ok);
         if (ok && envGop > 0) {
@@ -50,8 +50,9 @@ extern "C" Q_DECL_EXPORT int avcodec_open2(AVCodecContext *avctx, const AVCodec 
         }
 
         qInfo() << "CodecHooks: Intercepted avcodec_open2 for encoder:" << codec->name
-                << "- enforcing max_b_frames=0, bf=0, async_depth=1, gop_size=" << gopSize;
+                << "- enforcing max_b_frames=0, bf=0, refs=1, async_depth=1, gop_size=" << gopSize;
         avctx->max_b_frames = 0;
+        avctx->refs = 1;
         avctx->gop_size = gopSize;
         if (options) {
             av_dict_set(options, "bf", "0", 0);

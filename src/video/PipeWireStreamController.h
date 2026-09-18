@@ -47,9 +47,9 @@ private:
     int m_quality;
     int m_baseQuality{80};
 
-    // Motion-Adaptive Quality (Dynamic quality drop during heavy motion/scrolling)
+    // Motion-Adaptive Quality (Optional dynamic quality drop during heavy motion/scrolling; default 0 for encoder stability)
     bool m_isMotionActive{false};
-    int m_motionQualityDelta{20};
+    int m_motionQualityDelta{0};
     QTimer *m_motionTimer{nullptr};
 
     QElapsedTimer m_fpsTimer;
