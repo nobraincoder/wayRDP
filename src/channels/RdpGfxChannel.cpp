@@ -289,12 +289,12 @@ void RdpGfxChannel::stopSubmissionThread()
 bool RdpGfxChannel::hasInFlightCapacity()
 {
     std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    if (m_pendingFrames.size() < 2) {
+    if (m_pendingFrames.size() < 4) {
         return true;
     }
     const auto now = std::chrono::steady_clock::now();
     if (!m_pendingFrameTimestamps.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 50) {
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 60) {
         m_pendingFrames.clear();
         m_pendingFrameTimestamps.clear();
         return true;
