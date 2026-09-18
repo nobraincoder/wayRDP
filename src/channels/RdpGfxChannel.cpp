@@ -58,6 +58,8 @@ bool RdpGfxChannel::initialize(HANDLE vcm, rdpContext* rdpcontext)
         m_gfxReady = false;
         m_surfaceId = 0;
         m_hasActiveSurface = false;
+        m_surfaceWidth = 0;
+        m_surfaceHeight = 0;
         m_frameId = 0;
         m_lastSentFrameId = 0;
         m_lastAckedFrameId = 0;
@@ -287,12 +289,12 @@ void RdpGfxChannel::stopSubmissionThread()
 bool RdpGfxChannel::hasInFlightCapacity()
 {
     std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    if (m_pendingFrames.size() < 6) {
+    if (m_pendingFrames.size() < 2) {
         return true;
     }
     const auto now = std::chrono::steady_clock::now();
     if (!m_pendingFrameTimestamps.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 80) {
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 50) {
         m_pendingFrames.clear();
         m_pendingFrameTimestamps.clear();
         return true;
@@ -430,8 +432,8 @@ UINT RdpGfxChannel::capsAdvertiseCallback(RdpgfxServerContext* context, const RD
         int priority = -1;
         switch (capsSet->version) {
             case RDPGFX_CAPVERSION_107:
-                priority = 1007;
-                break;
+                // Cap at 10.6 for AVC420: 10.7 requires AVC444v2 which decoders reject when sent AVC420
+                continue;
             case RDPGFX_CAPVERSION_106:
             case RDPGFX_CAPVERSION_106_ERR:
                 priority = 1006;
