@@ -102,7 +102,7 @@ void QtAudioController::captureWorker()
     uint32_t chunkSize = (rate * 20 / 1000) * 4;
 
     pa_buffer_attr attr;
-    attr.maxlength = static_cast<uint32_t>(-1);
+    attr.maxlength = chunkSize * 2; // Strict 40ms max buffer prevents PipeWire from queueing stale audio
     attr.tlength = static_cast<uint32_t>(-1);
     attr.prebuf = static_cast<uint32_t>(-1);
     attr.minreq = static_cast<uint32_t>(-1);
@@ -160,6 +160,14 @@ void QtAudioController::captureWorker()
                 qWarning() << "QtAudioController: pa_simple_read() failed:" << pa_strerror(error);
             }
             break;
+        }
+
+        // Real-time synchronization check: if PipeWire buffer latency exceeds 40ms (e.g. after
+        // a network keyframe burst), flush the stale backlog immediately so audio never drifts
+        // or delays playback
+        pa_usec_t latency = pa_simple_get_latency(s, &error);
+        if (latency > 40000) {
+            pa_simple_flush(s, &error);
         }
 
         // Apply volume headroom scaling with saturation clamping to prevent digital clipping/distortion

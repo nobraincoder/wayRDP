@@ -1008,6 +1008,8 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     }
 
     if (audioEnabled) {
+        server->m_clientConfirmsBlocks = false;
+        server->m_lastConfirmedBlock = 0;
         RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(ctx->vcm);
         if (rdpsnd) {
             rdpsnd->data = server;
@@ -1016,6 +1018,7 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             rdpsnd->src_format = &server->m_pcmFormats[0];
             rdpsnd->latency = 20; // 20ms buffer for low latency and smooth jitter-free playback
             rdpsnd->Activated = rdpsnd_activated;
+            rdpsnd->ConfirmBlock = rdpsnd_confirm_block;
 
             if (rdpsnd->Initialize(rdpsnd, TRUE) == CHANNEL_RC_OK) {
                 QMutexLocker locker(&server->m_audioMutex);
@@ -2220,6 +2223,17 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
     }
 }
 
+UINT RdpServer::rdpsnd_confirm_block(RdpsndServerContext* context, BYTE confirmBlockNum, UINT16 wtimestamp)
+{
+    Q_UNUSED(wtimestamp);
+    if (!context) return CHANNEL_RC_OK;
+    RdpServer* server = static_cast<RdpServer*>(context->data);
+    if (!server) return CHANNEL_RC_OK;
+    server->m_clientConfirmsBlocks = true;
+    server->m_lastConfirmedBlock = confirmBlockNum;
+    return CHANNEL_RC_OK;
+}
+
 void RdpServer::sendAudioSamples(const QByteArray &data)
 {
     if (!m_audioReady) return;
@@ -2228,6 +2242,17 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
 
     size_t nframes = data.size() / 4;
     if (nframes == 0) return;
+
+    // Client flow control: if client sends WaveConfirm (like Windows mstsc),
+    // monitor in-flight blocks. If > 4 blocks (80ms) remain unconsumed on client,
+    // skip transmission so client's queue immediately drains rather than accumulating delay.
+    if (m_clientConfirmsBlocks) {
+        int inFlight = (m_rdpsndContext->block_no - m_lastConfirmedBlock.load() + 256) % 256;
+        if (inFlight > 4) {
+            m_audioFramesSent += nframes;
+            return;
+        }
+    }
 
     m_audioFramesSent += nframes;
 

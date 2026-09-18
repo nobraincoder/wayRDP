@@ -116,6 +116,7 @@ private:
     static UINT cliprdr_client_unlock_clipboard_data(CliprdrServerContext* context, const CLIPRDR_UNLOCK_CLIPBOARD_DATA* unlockClipboardData);
 
     static void rdpsnd_activated(RdpsndServerContext* context);
+    static UINT rdpsnd_confirm_block(RdpsndServerContext* context, BYTE confirmBlockNum, UINT16 wtimestamp);
 
     void generateCertificate();
     void setupSamDatabase();
@@ -136,6 +137,8 @@ public:
     QMutex m_cliprdrMutex;
     UINT16 m_audioTimestamp;
     std::atomic<bool> m_audioReady{false};
+    std::atomic<bool> m_clientConfirmsBlocks{false};
+    std::atomic<uint8_t> m_lastConfirmedBlock{0};
     std::atomic<bool> m_cliprdrReady{false};
     std::atomic<uint32_t> m_audioSampleRate{48000};
     std::atomic<uint64_t> m_audioFramesSent{0};
