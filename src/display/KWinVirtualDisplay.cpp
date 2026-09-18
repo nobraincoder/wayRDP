@@ -902,16 +902,23 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
     }
 
     // When releasing a mouse button (e.g. desktop area selection rubberband, dragging window/files,
-    // closing dropdown menus), Plasma/apps tear down the overlay/selection box.
-    // If the user stops moving the mouse immediately, KWin Wayland may not generate a follow-up
-    // damage frame, leaving the selection box lingering.
-    // Nudge KWin with a zero-delta motion event after 50ms and 150ms to ensure the post-release
-    // clean frame is always rendered and transmitted immediately.
+    // closing dropdown menus), Plasma/apps tear down the overlay/selection box with an OpacityAnimator.
+    // If the user stops moving the mouse immediately, KWin Wayland ignores zero-delta motion (m_pos == pos).
+    // By nudging the pointer position by 1 pixel and back across the 280ms animation lifecycle,
+    // KWin's PointerInputRedirection processes motion, updates pointer focus, and forces the compositor
+    // to render and transmit the final clean frame immediately.
     if (state == 0) {
-        QTimer::singleShot(50, this, [this]() {
+        double deltaX = (m_lastPointerX + 1.0 < m_requestedSize.width()) ? 1.0 : -1.0;
+        QTimer::singleShot(60, this, [this, deltaX]() {
+            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
+        });
+        QTimer::singleShot(120, this, [this]() {
             sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
         });
-        QTimer::singleShot(150, this, [this]() {
+        QTimer::singleShot(200, this, [this, deltaX]() {
+            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
+        });
+        QTimer::singleShot(280, this, [this]() {
             sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
         });
     }

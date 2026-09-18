@@ -132,15 +132,17 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
         m_idleTimer->start();
     }
 
-    if (!m_stream) {
-        m_stream = new PipeWireEncodedStream(this);
-        connect(m_stream, &PipeWireEncodedStream::sizeChanged, this, &PipeWireStreamController::onStreamSizeChanged);
-        connect(m_stream, &PipeWireEncodedStream::newPacket, this, &PipeWireStreamController::onNewPacket);
-        connect(m_stream, &PipeWireEncodedStream::cursorChanged, this, &PipeWireStreamController::onCursorChanged);
-        connect(m_stream, &PipeWireEncodedStream::errorFound, this, &PipeWireStreamController::onErrorFound);
-    } else {
+    if (m_stream) {
         m_stream->stop();
+        m_stream->deleteLater();
+        m_stream = nullptr;
     }
+
+    m_stream = new PipeWireEncodedStream(this);
+    connect(m_stream, &PipeWireEncodedStream::sizeChanged, this, &PipeWireStreamController::onStreamSizeChanged);
+    connect(m_stream, &PipeWireEncodedStream::newPacket, this, &PipeWireStreamController::onNewPacket);
+    connect(m_stream, &PipeWireEncodedStream::cursorChanged, this, &PipeWireStreamController::onCursorChanged);
+    connect(m_stream, &PipeWireEncodedStream::errorFound, this, &PipeWireStreamController::onErrorFound);
 
     // Configurable codec profile: default is H264Baseline (matches KRdp default for immediate zero-latency decoding)
     QString codec = qEnvironmentVariable("RDP_CODEC").trimmed().toLower();
@@ -203,10 +205,8 @@ void PipeWireStreamController::onStreamStopped()
     if (m_stream) {
         qInfo() << "PipeWireStreamController: Stopping stream...";
         m_stream->stop();
-        // Do NOT call deleteLater() on m_stream! PipeWireBaseEncodedStream destructor
-        // calls d->thread->wait(Forever), which deadlocks the main event loop if the
-        // screencast node was already destroyed by the portal. Reusing m_stream avoids
-        // the deadlock completely.
+        m_stream->deleteLater();
+        m_stream = nullptr;
     }
     m_currentStreamResolution = QSize();
 }
@@ -255,6 +255,16 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         emit streamSizeChanged(m_targetResolution);
     } else {
         mismatchDropCount = 0;
+    }
+
+    // Active screen updates (video, browsing, window motions) count as screen activity to prevent false idle throttling
+    m_lastActivityTimer.restart();
+    if (m_isIdle) {
+        m_isIdle = false;
+        qInfo() << "PipeWireStreamController: Screen activity detected, restoring framerate to" << m_activeFramerate << "FPS";
+        if (m_stream) {
+            m_stream->setMaxFramerate(m_activeFramerate);
+        }
     }
 
     // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)

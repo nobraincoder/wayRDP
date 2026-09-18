@@ -218,8 +218,14 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
         if (isKeyFrame) {
             m_frameQueue.clear();
         } else if (m_frameQueue.size() > 30) {
-            // Drop oldest delta frame if queue builds up, preserving the newest desktop state
-            m_frameQueue.pop_front();
+            // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
+            // In H.264, dropping a delta frame breaks the reference chain in mstsc,
+            // permanently freezing the client video stream until an IDR frame arrives.
+            m_frameQueue.clear();
+            m_waitingForKeyFrame = true;
+            qWarning() << "RdpGfxChannel: Frame queue overflow (" << m_frameQueue.size()
+                       << "frames), cleared queue and waiting for IDR keyframe to prevent client freeze";
+            return;
         }
         m_frameQueue.push_back({data, isKeyFrame});
     }
@@ -553,8 +559,17 @@ UINT RdpGfxChannel::frameAcknowledgeCallback(RdpgfxServerContext* context, const
     channel->m_lastAckedFrameId = frameAcknowledge->frameId;
     {
         std::lock_guard<std::mutex> lock(channel->m_pendingFramesMutex);
-        channel->m_pendingFrames.remove(frameAcknowledge->frameId);
-        if (!channel->m_pendingFrameTimestamps.empty()) {
+        // Cumulative ACK: prune all pending frame IDs <= acknowledged frameId (MS-RDPEGFX 3.2.5.1)
+        auto it = channel->m_pendingFrames.begin();
+        while (it != channel->m_pendingFrames.end()) {
+            if (*it <= frameAcknowledge->frameId) {
+                it = channel->m_pendingFrames.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        while (!channel->m_pendingFrameTimestamps.empty() &&
+               channel->m_pendingFrameTimestamps.front().first <= frameAcknowledge->frameId) {
             auto sentTime = channel->m_pendingFrameTimestamps.front().second;
             auto now = std::chrono::steady_clock::now();
             rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sentTime).count();
@@ -576,8 +591,17 @@ UINT RdpGfxChannel::qoeFrameAcknowledgeCallback(RdpgfxServerContext* context, co
     channel->m_lastAckedFrameId = qoeFrameAcknowledge->frameId;
     {
         std::lock_guard<std::mutex> lock(channel->m_pendingFramesMutex);
-        channel->m_pendingFrames.remove(qoeFrameAcknowledge->frameId);
-        if (!channel->m_pendingFrameTimestamps.empty()) {
+        // Cumulative ACK: prune all pending frame IDs <= acknowledged frameId (MS-RDPEGFX 3.2.5.1)
+        auto it = channel->m_pendingFrames.begin();
+        while (it != channel->m_pendingFrames.end()) {
+            if (*it <= qoeFrameAcknowledge->frameId) {
+                it = channel->m_pendingFrames.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        while (!channel->m_pendingFrameTimestamps.empty() &&
+               channel->m_pendingFrameTimestamps.front().first <= qoeFrameAcknowledge->frameId) {
             auto sentTime = channel->m_pendingFrameTimestamps.front().second;
             auto now = std::chrono::steady_clock::now();
             rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sentTime).count();
