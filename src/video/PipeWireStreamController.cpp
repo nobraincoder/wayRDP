@@ -203,9 +203,10 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    // Bounded pending frames buffer: 3 frames (~100ms at 30 FPS) prevents hoarding stale frames
-    // during throttled idle states and eliminates "Filter queue is full" drop storms.
-    int maxPending = 3;
+    // Bounded pending frames buffer: 16 frames (~266ms at 60 FPS) ensures sufficient buffer
+    // headroom for the hardware VA-API encoder pipeline during fast pointer/selection box updates,
+    // eliminating "Encode queue is full, discarding filtered frame" drops that cause selection ghosting.
+    int maxPending = 16;
     bool okPending = false;
     int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
     if (okPending && envPending >= 3) {
