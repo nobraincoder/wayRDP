@@ -2,6 +2,7 @@
 
 #include <QDebug>
 #include <QScopeGuard>
+#include <algorithm>
 #include <libei.h>
 #include <linux/input.h>
 #include <unistd.h>
@@ -59,10 +60,6 @@ std::optional<EisPointerDevice::Region> EisPointerDevice::regionForMapping(const
 EiConnection::EiConnection(int fd, QObject *parent)
     : QObject(parent)
 {
-    m_scrollStopTimer = new QTimer(this);
-    m_scrollStopTimer->setSingleShot(true);
-    connect(m_scrollStopTimer, &QTimer::timeout, this, &EiConnection::onScrollStopTimeout);
-
     m_ei = ei_new_sender(this);
     if (!m_ei) {
         qWarning() << "EiConnection: Could not create libei sender context";
@@ -165,6 +162,12 @@ void EiConnection::sendPointerMotionAbsolute(double x, double y, const QSize &st
         double normY = y / streamSize.height();
         devicePosition = QPointF(region.rect.x() + normX * region.rect.width(),
                                  region.rect.y() + normY * region.rect.height());
+        // Clamp to region bounds: libei silently discards events where
+        // coordinates fall on or beyond the region edge.
+        double maxX = region.rect.x() + region.rect.width() - 0.5;
+        double maxY = region.rect.y() + region.rect.height() - 0.5;
+        devicePosition.setX(std::clamp(devicePosition.x(), region.rect.x(), maxX));
+        devicePosition.setY(std::clamp(devicePosition.y(), region.rect.y(), maxY));
     } else {
         devicePosition = QPointF(x, y);
     }
@@ -173,18 +176,19 @@ void EiConnection::sendPointerMotionAbsolute(double x, double y, const QSize &st
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
 }
 
-void EiConnection::sendPointerButton(int button, uint state)
+bool EiConnection::sendPointerButton(int button, uint state)
 {
-    if (!m_ei) return;
+    if (!m_ei) return false;
 
     EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
     if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_BUTTON)) {
         pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_BUTTON);
     }
-    if (!pointerDevice) return;
+    if (!pointerDevice) return false;
 
     ei_device_button_button(pointerDevice->device(), static_cast<uint32_t>(button), state == 1);
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
+    return true;
 }
 
 void EiConnection::sendPointerAxis(double dx, double dy)
@@ -196,11 +200,6 @@ void EiConnection::sendPointerAxis(double dx, double dy)
         pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
     }
     if (!pointerDevice) return;
-
-    if (m_scrollStopTimer) {
-        m_scrollStopTimer->start(150);
-    }
-    m_isScrolling = true;
 
     // Pass computed Wayland deltas directly to libei (dx > 0: right, dy > 0: down)
     ei_device_scroll_delta(pointerDevice->device(), dx, dy);
@@ -217,31 +216,11 @@ void EiConnection::sendPointerAxisDiscrete(uint axis, int steps)
     }
     if (!pointerDevice) return;
 
-    if (m_scrollStopTimer) {
-        m_scrollStopTimer->start(150);
-    }
-    m_isScrolling = true;
-
     int32_t x = (axis == 1) ? (steps * 120) : 0;
     int32_t y = (axis == 0) ? (steps * 120) : 0;
 
     ei_device_scroll_discrete(pointerDevice->device(), x, y);
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
-}
-
-void EiConnection::onScrollStopTimeout()
-{
-    if (!m_ei || !m_isScrolling) return;
-
-    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
-    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_SCROLL)) {
-        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_SCROLL);
-    }
-    if (pointerDevice) {
-        ei_device_scroll_stop(pointerDevice->device(), true, true);
-        ei_device_frame(pointerDevice->device(), ei_now(m_ei));
-    }
-    m_isScrolling = false;
 }
 
 void EiConnection::sendKeyboardKeycode(int keycode, uint state)
@@ -308,7 +287,9 @@ void EiConnection::processEisEvents()
         }
         case EI_EVENT_DEVICE_ADDED:
             qInfo() << "EiConnection: Device added by EIS:" << ei_device_get_name(device);
-            if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE)) {
+            if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE) ||
+                ei_device_has_capability(device, EI_DEVICE_CAP_BUTTON) ||
+                ei_device_has_capability(device, EI_DEVICE_CAP_SCROLL)) {
                 m_pointerDevices.push_back(std::make_unique<EisPointerDevice>(device));
             }
             if (ei_device_has_capability(device, EI_DEVICE_CAP_KEYBOARD)) {

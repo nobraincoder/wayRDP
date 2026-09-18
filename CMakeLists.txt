@@ -63,17 +63,22 @@ unset(CMAKE_REQUIRED_LIBRARIES)
 set(SOURCES
     src/core/main.cpp
     src/core/RdpServer.cpp
+    src/core/AuthManager.cpp
+    src/core/RdpCursorManager.cpp
     src/core/SystemInputSettings.cpp
     src/channels/RdpGfxChannel.cpp
+    src/channels/RdpCliprdrChannel.cpp
     src/display/IVirtualDisplayBackend.cpp
     src/display/KWinVirtualDisplay.cpp
     src/input/EiConnection.cpp
     src/video/PipeWireStreamController.cpp
+    src/video/CodecHooks.cpp
     src/audio/QtAudioController.cpp
     src/session/SessionLifecycleController.cpp
 )
 
 add_executable(wayrdp ${SOURCES})
+set_target_properties(wayrdp PROPERTIES ENABLE_EXPORTS ON)
 
 target_include_directories(wayrdp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -94,6 +99,9 @@ target_link_libraries(wayrdp PRIVATE
     PkgConfig::LIBEI
     PkgConfig::PIPEWIRE
     ${PAM_LIBRARY}
+    ${CMAKE_DL_LIBS}
+    avcodec
+    avutil
     KPipeWire
     KPipeWireDmaBuf
     KPipeWireRecord

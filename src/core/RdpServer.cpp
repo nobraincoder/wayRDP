@@ -29,41 +29,9 @@
 #include <winpr/ntlm.h>
 #include <QTextStream>
 
-struct PamUserData {
-    QByteArray username;
-    QByteArray password;
-};
-
-static int pamConversation(int num_msg, const struct pam_message** msg,
-                           struct pam_response** resp, void* appdata_ptr)
-{
-    if (num_msg <= 0 || !resp || !appdata_ptr) {
-        return PAM_CONV_ERR;
-    }
-    struct pam_response* reply = (struct pam_response*)calloc(num_msg, sizeof(struct pam_response));
-    if (!reply) return PAM_BUF_ERR;
-
-    PamUserData* ud = static_cast<PamUserData*>(appdata_ptr);
-    for (int i = 0; i < num_msg; ++i) {
-        if (msg[i]->msg_style == PAM_PROMPT_ECHO_OFF) {
-            reply[i].resp = strdup(ud->password.constData());
-            reply[i].resp_retcode = 0;
-        } else if (msg[i]->msg_style == PAM_PROMPT_ECHO_ON) {
-            reply[i].resp = strdup(ud->username.constData());
-            reply[i].resp_retcode = 0;
-        } else {
-            reply[i].resp = nullptr;
-            reply[i].resp_retcode = 0;
-        }
-    }
-    *resp = reply;
-    return PAM_SUCCESS;
-}
-
 RdpServer::RdpServer(QObject *parent)
     : QObject(parent), m_listener(nullptr), m_listenerThread(nullptr), m_running(false),
-      m_cliprdrContext(nullptr), m_rdpsndContext(nullptr),
-      m_activePeer(nullptr), m_audioTimestamp(0), m_audioReady(false)
+      m_rdpsndContext(nullptr), m_activePeer(nullptr), m_audioTimestamp(0), m_audioReady(false)
 {
     WTSRegisterWtsApiFunctionTable(FreeRDP_InitWtsApi());
     m_networkAdaptTimer = new QTimer(this);
@@ -76,6 +44,30 @@ RdpServer::RdpServer(QObject *parent)
             m_lastRttMs = rttMs;
         }
     });
+
+    connect(&m_cliprdrChannel, &RdpCliprdrChannel::clientClipboardReceived,
+            this, &RdpServer::clientClipboardReceived);
+    connect(&m_cliprdrChannel, &RdpCliprdrChannel::clientFilesReceived,
+            this, &RdpServer::clientFilesReceived);
+
+    // Initialize supported PCM audio formats (48000Hz and 44100Hz 16-bit stereo)
+    m_pcmFormats[0].wFormatTag = WAVE_FORMAT_PCM;
+    m_pcmFormats[0].nChannels = 2;
+    m_pcmFormats[0].nSamplesPerSec = 48000;
+    m_pcmFormats[0].nAvgBytesPerSec = 48000 * 2 * 2;
+    m_pcmFormats[0].nBlockAlign = 4;
+    m_pcmFormats[0].wBitsPerSample = 16;
+    m_pcmFormats[0].cbSize = 0;
+    m_pcmFormats[0].data = nullptr;
+
+    m_pcmFormats[1].wFormatTag = WAVE_FORMAT_PCM;
+    m_pcmFormats[1].nChannels = 2;
+    m_pcmFormats[1].nSamplesPerSec = 44100;
+    m_pcmFormats[1].nAvgBytesPerSec = 44100 * 2 * 2;
+    m_pcmFormats[1].nBlockAlign = 4;
+    m_pcmFormats[1].wBitsPerSample = 16;
+    m_pcmFormats[1].cbSize = 0;
+    m_pcmFormats[1].data = nullptr;
 }
 
 RdpServer::~RdpServer()
@@ -83,170 +75,9 @@ RdpServer::~RdpServer()
     stop();
 }
 
-void RdpServer::generateCertificate()
-{
-    QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(certDir);
-    QString certPath = certDir + "/server.crt";
-    QString keyPath = certDir + "/server.key";
-
-    if (QFile::exists(certPath) && QFile::exists(keyPath)) {
-        return;
-    }
-
-    qInfo() << "Generating self-signed SSL/TLS certificate for FreeRDP...";
-    QProcess proc;
-    proc.start("openssl", QStringList() << "req" << "-x509" << "-newkey" << "rsa:2048"
-                                         << "-keyout" << keyPath << "-out" << certPath
-                                         << "-days" << "3650" << "-nodes"
-                                         << "-subj" << "/CN=wayrdp"
-                                         << "-addext" << "extendedKeyUsage=serverAuth,1.3.6.1.4.1.311.54.1.2"
-                                         << "-addext" << "basicConstraints=critical,CA:TRUE"
-                                         << "-addext" << "subjectAltName=DNS:localhost,IP:127.0.0.1");
-    proc.waitForFinished();
-    
-    if (proc.exitCode() == 0) {
-        qInfo() << "Successfully generated SSL certificates at" << certPath;
-    } else {
-        qWarning() << "Failed to generate certificates via OpenSSL:" << proc.readAllStandardError();
-    }
-}
-
 bool RdpServer::authenticateUser(const QString& username, const QString& password)
 {
-    if (qEnvironmentVariable("RDP_NO_AUTH") == "1") {
-        qInfo() << "Authentication bypassed due to RDP_NO_AUTH=1";
-        return true;
-    }
-
-
-    // 1. Developer/testing override via environment variable
-    QString envPassword = qEnvironmentVariable("RDP_PASSWORD");
-    if (!envPassword.isEmpty() && password == envPassword) {
-        qInfo() << "Authenticated using RDP_PASSWORD override for user:" << username;
-        return true;
-    }
-
-    if (password.isEmpty()) {
-        qWarning() << "Empty password provided, rejecting authentication for user:" << username;
-        if (envPassword.isEmpty()) {
-            qInfo() << "Notice: For Windows mstsc client compatibility, set RDP_PASSWORD in ~/.config/wayrdp.env to enable native Network Level Authentication (NLA).";
-        }
-        return false;
-    }
-
-    // 2. PAM system credentials check
-    qInfo() << "Authenticating user" << username << "via PAM...";
-    pam_handle_t* pamh = nullptr;
-    PamUserData userdata{ username.toUtf8(), password.toUtf8() };
-    struct pam_conv conv = { pamConversation, &userdata };
-
-    // Prefer login or krdp PAM service
-    const char* pamService = "login";
-    if (QFile::exists("/etc/pam.d/krdp")) {
-        pamService = "krdp";
-    } else if (QFile::exists("/etc/pam.d/krdpserver")) {
-        pamService = "krdpserver";
-    }
-
-    int retval = pam_start(pamService, userdata.username.constData(), &conv, &pamh);
-    if (retval != PAM_SUCCESS) {
-        qWarning() << "pam_start failed with code" << retval;
-        return false;
-    }
-
-    retval = pam_authenticate(pamh, 0);
-    bool success = (retval == PAM_SUCCESS);
-
-    if (success) {
-        retval = pam_acct_mgmt(pamh, 0);
-        success = (retval == PAM_SUCCESS);
-        if (!success) {
-            qWarning() << "pam_acct_mgmt failed with code" << retval << "-" << pam_strerror(pamh, retval);
-        }
-    } else {
-        qWarning() << "pam_authenticate failed with code" << retval << "-" << pam_strerror(pamh, retval);
-    }
-
-    pam_end(pamh, retval);
-    return success;
-}
-
-void RdpServer::setupSamDatabase()
-{
-    cleanupSamDatabase();
-
-    QString rdpPassword = qEnvironmentVariable("RDP_PASSWORD");
-    if (rdpPassword.isEmpty() || qEnvironmentVariable("RDP_NO_AUTH") == "1") {
-        return;
-    }
-
-    QString runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (runtimeDir.isEmpty()) {
-        runtimeDir = QString("/run/user/%1").arg(getuid());
-    }
-    QDir().mkpath(runtimeDir + "/wayrdp");
-
-    m_samFilePath = runtimeDir + "/wayrdp/sam";
-    QFile samFile(m_samFilePath);
-    if (!samFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        qWarning() << "Failed to open SAM database file for writing:" << m_samFilePath;
-        m_samFilePath.clear();
-        return;
-    }
-
-    samFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-
-    QByteArray passBytes = rdpPassword.toUtf8();
-    BYTE hash[16] = {0};
-    if (!NTOWFv1A(passBytes.constData(), passBytes.length(), hash)) {
-        qWarning() << "NTOWFv1A failed to compute NTLM hash";
-        samFile.close();
-        samFile.remove();
-        m_samFilePath.clear();
-        return;
-    }
-
-    QString hexHash;
-    for (int i = 0; i < 16; ++i) {
-        hexHash.append(QString::asprintf("%02x", hash[i]));
-    }
-
-    QStringList users;
-    QString localUser = qEnvironmentVariable("USER");
-    if (localUser.isEmpty()) localUser = qEnvironmentVariable("LOGNAME");
-    if (localUser.isEmpty()) {
-        char* l = getlogin();
-        if (l) localUser = QString::fromUtf8(l);
-    }
-    if (!localUser.isEmpty()) {
-        users << localUser;
-        if (localUser != localUser.toLower()) {
-            users << localUser.toLower();
-        }
-    }
-    QString customUser = qEnvironmentVariable("RDP_USERNAME");
-    if (!customUser.isEmpty() && !users.contains(customUser)) {
-        users << customUser;
-        if (customUser != customUser.toLower()) {
-            users << customUser.toLower();
-        }
-    }
-
-    QTextStream out(&samFile);
-    for (const QString& user : users) {
-        out << user << ":::" << hexHash << ":::\n";
-    }
-    samFile.close();
-    qInfo() << "NLA SAM database generated at" << m_samFilePath << "for users:" << users;
-}
-
-void RdpServer::cleanupSamDatabase()
-{
-    if (!m_samFilePath.isEmpty() && QFile::exists(m_samFilePath)) {
-        QFile::remove(m_samFilePath);
-        m_samFilePath.clear();
-    }
+    return AuthManager::authenticateUser(username, password);
 }
 
 bool RdpServer::start(int port)
@@ -255,10 +86,10 @@ bool RdpServer::start(int port)
         return false;
 
     // Generate certificates if they do not exist
-    generateCertificate();
+    AuthManager::generateCertificate();
 
     // Prepare SAM database for NLA authentication if RDP_PASSWORD is configured
-    setupSamDatabase();
+    m_samFilePath = AuthManager::setupSamDatabase();
 
     m_listener = freerdp_listener_new();
     if (!m_listener) {
@@ -305,23 +136,13 @@ void RdpServer::stop()
 
     m_running = false;
     m_gfxChannel.close();
+    m_cliprdrChannel.close();
+    m_cursorManager.reset();
     m_activePeer = nullptr;
-    {
-        QMutexLocker locker(&m_cliprdrMutex);
-        m_cliprdrContext = nullptr;
-        m_cliprdrReady = false;
-        for (auto& inf : m_incomingFiles) {
-            if (inf.localFile) {
-                inf.localFile->close();
-                delete inf.localFile;
-                inf.localFile = nullptr;
-            }
-        }
-        m_incomingFiles.clear();
-        m_completedIncomingFilePaths.clear();
-    }
+
     {
         QMutexLocker locker(&m_audioMutex);
+        // FreeRDP 3 auto-frees rdpsnd context on VCM close; do not double-free.
         m_rdpsndContext = nullptr;
         m_audioReady = false;
     }
@@ -337,7 +158,7 @@ void RdpServer::stop()
         m_listener = nullptr;
     }
 
-    cleanupSamDatabase();
+    AuthManager::cleanupSamDatabase(m_samFilePath);
 }
 
 DWORD WINAPI RdpServer::listenerThread(LPVOID param)
@@ -581,7 +402,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
 
     if (hasRdpPassword && !noAuth) {
         if (server->m_samFilePath.isEmpty() || !QFile::exists(server->m_samFilePath)) {
-            server->setupSamDatabase();
+            server->m_samFilePath = AuthManager::setupSamDatabase();
         }
         if (!server->m_samFilePath.isEmpty()) {
             freerdp_settings_set_string(settings, FreeRDP_NtlmSamFile, server->m_samFilePath.toUtf8().constData());
@@ -608,13 +429,14 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_HasHorizontalWheel, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_UnicodeInput, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_HasRelativeMouseEvent, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, TRUE);
 
     // Load SSL certificate and private key
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QString certPath = certDir + "/server.crt";
     QString keyPath = certDir + "/server.key";
     if (!QFile::exists(certPath) || !QFile::exists(keyPath)) {
-        server->generateCertificate();
+        AuthManager::generateCertificate();
     }
     if (!QFile::exists(certPath) || !QFile::exists(keyPath)) {
         if (QFile::exists("server.crt") && QFile::exists("server.key")) {
@@ -741,43 +563,36 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         ctx->disp = nullptr;
     }
     
-    if (server->m_activePeer == peer) {
-        server->m_activePeer = nullptr;
-        server->m_gfxChannel.close();
-    }
+    bool wasActive = false;
     {
-        QMutexLocker locker(&server->m_cliprdrMutex);
+        QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer == peer) {
-            server->m_cliprdrContext = nullptr;
-            server->m_cliprdrReady = false;
-            for (auto& inf : server->m_incomingFiles) {
-                if (inf.localFile) {
-                    inf.localFile->close();
-                    delete inf.localFile;
-                    inf.localFile = nullptr;
-                }
-            }
-            server->m_incomingFiles.clear();
-            server->m_completedIncomingFilePaths.clear();
+            server->m_activePeer = nullptr;
+            wasActive = true;
         }
     }
-    if (server->m_networkAdaptTimer) {
-        QMetaObject::invokeMethod(server->m_networkAdaptTimer, "stop", Qt::QueuedConnection);
-    }
-    server->m_smoothedRttMs = 0;
-    server->m_lastRttMs = 0;
-    server->m_currentFps = 60;
-    server->m_currentQuality = 95;
-    {
-        QMutexLocker locker(&server->m_audioMutex);
-        if (server->m_activePeer == peer) {
+
+    if (wasActive) {
+        server->m_gfxChannel.close();
+        server->m_cliprdrChannel.close();
+        server->m_cursorManager.reset();
+        if (server->m_networkAdaptTimer) {
+            QMetaObject::invokeMethod(server->m_networkAdaptTimer, "stop", Qt::QueuedConnection);
+        }
+        server->m_smoothedRttMs = 0;
+        server->m_lastRttMs = 0;
+        server->m_currentFps = 60;
+        server->m_currentQuality = 95;
+        {
+            QMutexLocker locker(&server->m_audioMutex);
+            // FreeRDP 3 automatically frees the rdpsnd context when the
+            // virtual channel manager (VCM) is closed. Calling
+            // rdpsnd_server_context_free() here causes a double-free
+            // (SIGABRT "double free or corruption (out)").
             server->m_rdpsndContext = nullptr;
             server->m_audioReady = false;
         }
     }
-    server->m_cursorHidden = false;
-    server->m_cursorCache.clear();
-    server->m_lastUsedCursor = nullptr;
     
     if (ctx->activated) {
         ctx->activated = false;
@@ -943,32 +758,41 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     }
 
     // Initialize Cliprdr channel
-    CliprdrServerContext* cliprdr = cliprdr_server_context_new(ctx->vcm);
-    if (cliprdr) {
-        cliprdr->custom = server;
-        cliprdr->rdpcontext = reinterpret_cast<rdpContext*>(ctx);
-        cliprdr->useLongFormatNames = TRUE;
-        cliprdr->streamFileClipEnabled = TRUE;
-        cliprdr->fileClipNoFilePaths = TRUE;
-        cliprdr->canLockClipData = TRUE;
-        // Auto-send Capabilities + Monitor Ready PDUs (required by Mac and Windows clients)
-        cliprdr->autoInitializationSequence = TRUE;
-        cliprdr->ClientCapabilities = cliprdr_client_capabilities;
-        cliprdr->ClientFormatList = cliprdr_client_format_list;
-        cliprdr->ClientFormatListResponse = cliprdr_client_format_list_response;
-        cliprdr->ClientFormatDataRequest = cliprdr_client_format_data_request;
-        cliprdr->ClientFormatDataResponse = cliprdr_client_format_data_response;
-        cliprdr->ClientFileContentsRequest = cliprdr_client_file_contents_request;
-        cliprdr->ClientFileContentsResponse = cliprdr_client_file_contents_response;
-        cliprdr->ClientLockClipboardData = cliprdr_client_lock_clipboard_data;
-        cliprdr->ClientUnlockClipboardData = cliprdr_client_unlock_clipboard_data;
-        if (cliprdr->Start(cliprdr) == CHANNEL_RC_OK) {
-            QMutexLocker locker(&server->m_cliprdrMutex);
-            server->m_cliprdrContext = cliprdr;
-            server->m_cliprdrReady = false;
-            qInfo() << "Clipboard (cliprdr) channel initialized with file transfer enabled";
-        } else {
-            cliprdr_server_context_free(cliprdr);
+    server->m_cliprdrChannel.initialize(ctx->vcm, reinterpret_cast<rdpContext*>(ctx));
+
+    // Initialize Audio Output (rdpsnd) channel if enabled
+    bool audioEnabled = true;
+    if (qEnvironmentVariableIsSet("RDP_AUDIO")) {
+        QString a = qEnvironmentVariable("RDP_AUDIO").trimmed().toLower();
+        if (a == "0" || a == "false" || a == "off") {
+            audioEnabled = false;
+        }
+    }
+
+    if (audioEnabled) {
+        server->m_clientConfirmsBlocks = false;
+        server->m_lastConfirmedBlock = 0;
+        server->m_lastLeftSample = 0;
+        server->m_lastRightSample = 0;
+        server->m_audioDroppedPrevious = false;
+        RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(ctx->vcm);
+        if (rdpsnd) {
+            rdpsnd->data = server;
+            rdpsnd->server_formats = server->m_pcmFormats;
+            rdpsnd->num_server_formats = 2;
+            rdpsnd->src_format = &server->m_pcmFormats[0];
+            rdpsnd->latency = 20; // 20ms buffer for low latency and smooth jitter-free playback
+            rdpsnd->Activated = rdpsnd_activated;
+            rdpsnd->ConfirmBlock = rdpsnd_confirm_block;
+
+            if (rdpsnd->Initialize(rdpsnd, TRUE) == CHANNEL_RC_OK) {
+                QMutexLocker locker(&server->m_audioMutex);
+                server->m_rdpsndContext = rdpsnd;
+                qInfo() << "Audio output (rdpsnd) channel initialized with 20ms buffer";
+            } else {
+                qWarning() << "Failed to initialize rdpsnd channel";
+                rdpsnd_server_context_free(rdpsnd);
+            }
         }
     }
 
@@ -1061,6 +885,12 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     RdpServer* server = ctx->server;
     rdpSettings* settings = peer->context->settings;
 
+    // Detect client OS type (Windows, Mac, iOS, Android, etc.)
+    UINT32 osMajor = freerdp_settings_get_uint32(settings, FreeRDP_OsMajorType);
+    ctx->isWindowsClient = (osMajor == 1 /* OSMAJORTYPE_WINDOWS */);
+    qInfo() << "peerPostConnect: Client OS:" << freerdp_peer_os_major_type_string(peer)
+            << "(osMajor:" << osMajor << ") isWindows:" << ctx->isWindowsClient;
+
     // 1. Passwordless LAN mode
     if (qEnvironmentVariable("RDP_NO_AUTH") == "1") {
         qInfo() << "peerPostConnect: Authentication bypassed due to RDP_NO_AUTH=1";
@@ -1121,116 +951,9 @@ void RdpServer::sendVideoFrame(const QByteArray &data, bool isKeyFrame)
     m_gfxChannel.sendFrame(data, isKeyFrame);
 }
 
-static QByteArray createXorMask(const QImage &image)
-{
-    auto converted = image.convertToFormat(QImage::Format_ARGB32);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    converted.flip(Qt::Vertical);
-    converted.rgbSwap();
-#else
-    converted = converted.mirrored(false, true).rgbSwapped();
-#endif
-    return QByteArray(reinterpret_cast<char *>(converted.bits()), converted.sizeInBytes());
-}
-
 void RdpServer::updateCursorShape(const QImage &image, const QPoint &hotspot)
 {
-    if (image.isNull()) return;
-
-    freerdp_peer* peer = m_activePeer;
-    if (!peer || !peer->context || !peer->context->update || !peer->context->update->pointer)
-        return;
-
-    // RDP cannot handle cursor images larger than 384x384 px. Discard and use system default cursor.
-    if (image.width() > 384 || image.height() > 384) {
-        POINTER_SYSTEM_UPDATE pointerSystemUpdate;
-        memset(&pointerSystemUpdate, 0, sizeof(pointerSystemUpdate));
-        pointerSystemUpdate.type = SYSPTR_DEFAULT;
-        peer->context->update->pointer->PointerSystem(peer->context, &pointerSystemUpdate);
-        return;
-    }
-
-    // If currently displayed cursor is identical, update timestamp and return
-    if (m_lastUsedCursor && m_lastUsedCursor->image == image && m_lastUsedCursor->hotspot == hotspot) {
-        m_lastUsedCursor->lastUsed = std::chrono::steady_clock::now();
-        return;
-    }
-
-    auto updatePointer = peer->context->update->pointer;
-
-    // Check if cursor is already cached
-    auto itr = std::find_if(m_cursorCache.begin(), m_cursorCache.end(), [&image, &hotspot](const CursorCacheEntry &cached) {
-        return cached.hotspot == hotspot && cached.image == image;
-    });
-    if (itr != m_cursorCache.end()) {
-        m_lastUsedCursor = &itr.value();
-        itr->lastUsed = std::chrono::steady_clock::now();
-        POINTER_CACHED_UPDATE pointerCachedUpdate;
-        memset(&pointerCachedUpdate, 0, sizeof(pointerCachedUpdate));
-        pointerCachedUpdate.cacheIndex = itr->cacheId;
-        updatePointer->PointerCached(peer->context, &pointerCachedUpdate);
-        return;
-    }
-
-    // New cursor entry
-    CursorCacheEntry newCursor;
-    newCursor.hotspot = hotspot;
-    newCursor.image = image;
-    newCursor.cacheId = static_cast<uint32_t>(m_cursorCache.size());
-    newCursor.lastUsed = std::chrono::steady_clock::now();
-
-    // Evict least recently used cursor if cache limit reached
-    UINT32 maxCacheSize = freerdp_settings_get_uint32(peer->context->settings, FreeRDP_PointerCacheSize);
-    if (maxCacheSize == 0) maxCacheSize = 20;
-    if (static_cast<UINT32>(m_cursorCache.size()) >= maxCacheSize) {
-        auto lru = std::min_element(m_cursorCache.cbegin(), m_cursorCache.cend(), [](const CursorCacheEntry &first, const CursorCacheEntry &second) {
-            return first.lastUsed < second.lastUsed;
-        });
-        newCursor.cacheId = lru->cacheId;
-        m_cursorCache.erase(lru);
-    }
-
-    auto xorMask = createXorMask(image);
-
-    if (image.width() < 96 && image.height() < 96) {
-        POINTER_NEW_UPDATE pointerNewUpdate;
-        memset(&pointerNewUpdate, 0, sizeof(pointerNewUpdate));
-        pointerNewUpdate.xorBpp = 32;
-        auto &colorUpdate = pointerNewUpdate.colorPtrAttr;
-        colorUpdate.cacheIndex = static_cast<UINT16>(newCursor.cacheId);
-        colorUpdate.hotSpotX = static_cast<UINT16>(qBound(0, hotspot.x(), image.width() - 1));
-        colorUpdate.hotSpotY = static_cast<UINT16>(qBound(0, hotspot.y(), image.height() - 1));
-        colorUpdate.width = static_cast<UINT16>(image.width());
-        colorUpdate.height = static_cast<UINT16>(image.height());
-        // For 32-bit ARGB cursors, lengthAndMask = 0 enables native 8-bit alpha blending without 1-bit raster stippling
-        colorUpdate.lengthAndMask = 0;
-        colorUpdate.andMaskData = nullptr;
-        colorUpdate.lengthXorMask = static_cast<UINT16>(xorMask.size());
-        colorUpdate.xorMaskData = reinterpret_cast<BYTE *>(xorMask.data());
-        updatePointer->PointerNew(peer->context, &pointerNewUpdate);
-    } else {
-        POINTER_LARGE_UPDATE pointerLargeUpdate;
-        memset(&pointerLargeUpdate, 0, sizeof(pointerLargeUpdate));
-        pointerLargeUpdate.xorBpp = 32;
-        pointerLargeUpdate.cacheIndex = static_cast<UINT16>(newCursor.cacheId);
-        pointerLargeUpdate.hotSpotX = static_cast<UINT16>(qBound(0, hotspot.x(), image.width() - 1));
-        pointerLargeUpdate.hotSpotY = static_cast<UINT16>(qBound(0, hotspot.y(), image.height() - 1));
-        pointerLargeUpdate.width = static_cast<UINT16>(image.width());
-        pointerLargeUpdate.height = static_cast<UINT16>(image.height());
-        pointerLargeUpdate.lengthAndMask = 0;
-        pointerLargeUpdate.andMaskData = nullptr;
-        pointerLargeUpdate.lengthXorMask = static_cast<UINT32>(xorMask.size());
-        pointerLargeUpdate.xorMaskData = reinterpret_cast<BYTE *>(xorMask.data());
-        updatePointer->PointerLarge(peer->context, &pointerLargeUpdate);
-    }
-
-    POINTER_CACHED_UPDATE pointerCachedUpdate;
-    memset(&pointerCachedUpdate, 0, sizeof(pointerCachedUpdate));
-    pointerCachedUpdate.cacheIndex = static_cast<UINT32>(newCursor.cacheId);
-    updatePointer->PointerCached(peer->context, &pointerCachedUpdate);
-
-    auto inserted = m_cursorCache.insert(newCursor.cacheId, newCursor);
-    m_lastUsedCursor = &inserted.value();
+    m_cursorManager.updateCursorShape(m_activePeer, image, hotspot);
 }
 
 void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
@@ -1254,8 +977,12 @@ BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
-    const auto stuck = server->m_pressedKeys;
-    server->m_pressedKeys.clear();
+    QSet<quint32> stuck;
+    {
+        QMutexLocker locker(&server->m_pressedKeysMutex);
+        stuck = server->m_pressedKeys;
+        server->m_pressedKeys.clear();
+    }
     for (auto keycode : stuck) {
         emit server->keyboardKeycode(static_cast<int>(keycode), 0);
     }
@@ -1286,11 +1013,13 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
             return TRUE;
         }
 
+        double osScale = (ctx && ctx->isWindowsClient) ? server->m_inputSettings.windowsScrollScale() : 1.0;
+
         if (flags & PTR_FLAGS_WHEEL) {
-            double dy = server->m_inputSettings.computeVerticalDelta(rawDelta);
+            double dy = server->m_inputSettings.computeVerticalDelta(rawDelta) * osScale;
             emit server->pointerAxis(0.0, dy);
         } else if (flags & PTR_FLAGS_HWHEEL) {
-            double dx = server->m_inputSettings.computeHorizontalDelta(rawDelta);
+            double dx = server->m_inputSettings.computeHorizontalDelta(rawDelta) * osScale;
             emit server->pointerAxis(dx, 0.0);
         }
 
@@ -1382,10 +1111,13 @@ BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
     quint32 keycode = GetKeycodeFromVirtualKeyCode(virtualCode, WINPR_KEYCODE_TYPE_EVDEV);
 
     uint state = (flags & KBD_FLAGS_RELEASE) ? 0 : 1;
-    if (state == 0) {
-        server->m_pressedKeys.remove(keycode);
-    } else {
-        server->m_pressedKeys.insert(keycode);
+    {
+        QMutexLocker locker(&server->m_pressedKeysMutex);
+        if (state == 0) {
+            server->m_pressedKeys.remove(keycode);
+        } else {
+            server->m_pressedKeys.insert(keycode);
+        }
     }
 
     if (keycode > 0) {
@@ -1430,586 +1162,14 @@ BOOL RdpServer::peerSuppressOutput(rdpContext* context, BYTE allow, const RECTAN
     return TRUE;
 }
 
-UINT RdpServer::cliprdr_client_capabilities(CliprdrServerContext* context, const CLIPRDR_CAPABILITIES* capabilities)
-{
-    Q_UNUSED(capabilities);
-    RdpServer* server = static_cast<RdpServer*>(context->custom);
-    if (!server) return CHANNEL_RC_OK;
-
-    qInfo() << "CLIPRDR: ClientCapabilities received! Clipboard channel is now ready.";
-    server->m_cliprdrReady = true;
-
-    // If host has clipboard content, announce it now to the client
-    QMutexLocker locker(&server->m_cliprdrMutex);
-    if (!server->m_outgoingFiles.isEmpty()) {
-        CLIPRDR_FORMAT_LIST formatList;
-        memset(&formatList, 0, sizeof(formatList));
-        CLIPRDR_FORMAT formats[4];
-        formats[0].formatId = CF_UNICODETEXT;
-        formats[0].formatName = nullptr;
-        formats[1].formatId = CF_TEXT;
-        formats[1].formatName = nullptr;
-        formats[2].formatId = server->m_formatFileGroupDescriptorW;
-        formats[2].formatName = const_cast<char*>("FileGroupDescriptorW");
-        formats[3].formatId = server->m_formatFileContents;
-        formats[3].formatName = const_cast<char*>("FileContents");
-
-        formatList.common.msgType = CB_FORMAT_LIST;
-        formatList.common.msgFlags = 0;
-        formatList.numFormats = 4;
-        formatList.formats = formats;
-
-        context->ServerFormatList(context, &formatList);
-    } else if (!server->m_lastHostClipboardText.isEmpty()) {
-        CLIPRDR_FORMAT_LIST formatList;
-        memset(&formatList, 0, sizeof(formatList));
-        CLIPRDR_FORMAT formats[2];
-        formats[0].formatId = CF_UNICODETEXT;
-        formats[0].formatName = nullptr;
-        formats[1].formatId = CF_TEXT;
-        formats[1].formatName = nullptr;
-
-        formatList.common.msgType = CB_FORMAT_LIST;
-        formatList.common.msgFlags = 0;
-        formatList.numFormats = 2;
-        formatList.formats = formats;
-
-        context->ServerFormatList(context, &formatList);
-    }
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_format_list_response(CliprdrServerContext* context, const CLIPRDR_FORMAT_LIST_RESPONSE* formatListResponse)
-{
-    Q_UNUSED(context);
-    qInfo() << "CLIPRDR: ClientFormatListResponse received with flags:" << formatListResponse->common.msgFlags;
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_format_list(CliprdrServerContext* context, const CLIPRDR_FORMAT_LIST* formatList)
-{
-    RdpServer* server = static_cast<RdpServer*>(context->custom);
-    if (!server) return CHANNEL_RC_OK;
-
-    qInfo() << "CLIPRDR: Client advertised" << formatList->numFormats << "clipboard formats";
-    server->m_clientFileGroupDescriptorFormatId = 0;
-    UINT32 requestedId = 0;
-
-    for (UINT32 i = 0; i < formatList->numFormats; i++) {
-        const char* name = formatList->formats[i].formatName;
-        UINT32 id = formatList->formats[i].formatId;
-        qInfo() << "  Format [" << i << "]: id=" << id
-                << "name=" << (name ? name : "standard");
-        if (name && (strcasecmp(name, "FileGroupDescriptorW") == 0 ||
-                     strcasecmp(name, "FileGroupDescriptor") == 0)) {
-            server->m_clientFileGroupDescriptorFormatId = id;
-        }
-    }
-
-    CLIPRDR_FORMAT_LIST_RESPONSE response;
-    memset(&response, 0, sizeof(response));
-    response.common.msgType = CB_FORMAT_LIST_RESPONSE;
-    response.common.msgFlags = CB_RESPONSE_OK;
-    context->ServerFormatListResponse(context, &response);
-
-    if (server->m_clientFileGroupDescriptorFormatId != 0) {
-        // Client has files on clipboard! Request the descriptor
-        CLIPRDR_FORMAT_DATA_REQUEST req;
-        memset(&req, 0, sizeof(req));
-        req.common.msgType = CB_FORMAT_DATA_REQUEST;
-        req.requestedFormatId = server->m_clientFileGroupDescriptorFormatId;
-        context->lastRequestedFormatId = server->m_clientFileGroupDescriptorFormatId;
-        context->ServerFormatDataRequest(context, &req);
-        qInfo() << "CLIPRDR: Client has files on clipboard, requested FileGroupDescriptorW formatId:" << server->m_clientFileGroupDescriptorFormatId;
-        return CHANNEL_RC_OK;
-    }
-
-    // Fall back to text formats
-    for (UINT32 i = 0; i < formatList->numFormats; i++) {
-        if (formatList->formats[i].formatId == CF_UNICODETEXT) {
-            requestedId = CF_UNICODETEXT;
-            break;
-        } else if (formatList->formats[i].formatId == CF_TEXT && requestedId == 0) {
-            requestedId = CF_TEXT;
-        }
-    }
-
-    if (requestedId != 0) {
-        CLIPRDR_FORMAT_DATA_REQUEST req;
-        memset(&req, 0, sizeof(req));
-        req.common.msgType = CB_FORMAT_DATA_REQUEST;
-        req.requestedFormatId = requestedId;
-        context->lastRequestedFormatId = requestedId;
-        context->ServerFormatDataRequest(context, &req);
-        qInfo() << "CLIPRDR: Requested format data for formatId:" << requestedId;
-    }
-
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_format_data_request(CliprdrServerContext* context, const CLIPRDR_FORMAT_DATA_REQUEST* formatDataRequest)
-{
-    RdpServer* server = static_cast<RdpServer*>(context->custom);
-    if (!server) return CHANNEL_RC_OK;
-
-    qInfo() << "CLIPRDR: ClientFormatDataRequest for formatId:" << formatDataRequest->requestedFormatId;
-
-    CLIPRDR_FORMAT_DATA_RESPONSE resp;
-    memset(&resp, 0, sizeof(resp));
-    resp.common.msgType = CB_FORMAT_DATA_RESPONSE;
-
-    if (formatDataRequest->requestedFormatId == server->m_formatFileGroupDescriptorW) {
-        QMutexLocker locker(&server->m_cliprdrMutex);
-        resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.common.dataLen = server->m_outgoingFgdData.size();
-        resp.requestedFormatData = reinterpret_cast<const BYTE*>(server->m_outgoingFgdData.constData());
-        context->ServerFormatDataResponse(context, &resp);
-        qInfo() << "CLIPRDR: Responded with FileGroupDescriptorW (" << server->m_outgoingFgdData.size() << "bytes)";
-        return CHANNEL_RC_OK;
-    }
-
-    if (formatDataRequest->requestedFormatId == CF_UNICODETEXT) {
-        QByteArray utf16;
-        {
-            QMutexLocker locker(&server->m_cliprdrMutex);
-            const ushort* utf16Data = server->m_lastHostClipboardText.utf16();
-            int len = (server->m_lastHostClipboardText.length() + 1) * sizeof(char16_t);
-            utf16 = QByteArray(reinterpret_cast<const char*>(utf16Data), len);
-        }
-        resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.common.dataLen = utf16.size();
-        resp.requestedFormatData = reinterpret_cast<const BYTE*>(utf16.constData());
-        context->ServerFormatDataResponse(context, &resp);
-        qInfo() << "CLIPRDR: Responded with CF_UNICODETEXT (" << utf16.size() << "bytes)";
-    } else if (formatDataRequest->requestedFormatId == CF_TEXT) {
-        QByteArray utf8;
-        {
-            QMutexLocker locker(&server->m_cliprdrMutex);
-            utf8 = server->m_lastHostClipboardText.toUtf8();
-            utf8.append('\0');
-        }
-        resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.common.dataLen = utf8.size();
-        resp.requestedFormatData = reinterpret_cast<const BYTE*>(utf8.constData());
-        context->ServerFormatDataResponse(context, &resp);
-        qInfo() << "CLIPRDR: Responded with CF_TEXT (" << utf8.size() << "bytes)";
-    } else {
-        resp.common.msgFlags = CB_RESPONSE_FAIL;
-        context->ServerFormatDataResponse(context, &resp);
-        qWarning() << "CLIPRDR: Unsupported formatId requested:" << formatDataRequest->requestedFormatId;
-    }
-
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_format_data_response(CliprdrServerContext* context, const CLIPRDR_FORMAT_DATA_RESPONSE* formatDataResponse)
-{
-    RdpServer* server = static_cast<RdpServer*>(context->custom);
-    if (!server) return CHANNEL_RC_OK;
-
-    qInfo() << "CLIPRDR: ClientFormatDataResponse, flags:" << formatDataResponse->common.msgFlags
-            << "dataLen:" << formatDataResponse->common.dataLen;
-
-    if (!(formatDataResponse->common.msgFlags & CB_RESPONSE_OK) || formatDataResponse->common.dataLen == 0) {
-        return CHANNEL_RC_OK;
-    }
-
-    if (server->m_clientFileGroupDescriptorFormatId != 0 &&
-        context->lastRequestedFormatId == server->m_clientFileGroupDescriptorFormatId) {
-        // We received FileGroupDescriptorW!
-        if (formatDataResponse->common.dataLen < sizeof(UINT32)) {
-            qWarning() << "CLIPRDR: Received invalid FileGroupDescriptorW payload (too short):" << formatDataResponse->common.dataLen;
-            return CHANNEL_RC_OK;
-        }
-
-        const BYTE* data = formatDataResponse->requestedFormatData;
-        UINT32 cItems = *reinterpret_cast<const UINT32*>(data);
-        qInfo() << "CLIPRDR: FileGroupDescriptorW contains" << cItems << "files";
-
-        // Clean up previous incoming files if any
-        for (auto& inf : server->m_incomingFiles) {
-            if (inf.localFile) {
-                inf.localFile->close();
-                delete inf.localFile;
-                inf.localFile = nullptr;
-            }
-        }
-        server->m_incomingFiles.clear();
-        server->m_completedIncomingFilePaths.clear();
-        server->m_currentIncomingFileIndex = 0;
-
-        QString targetDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/rdp-clipboard";
-        if (targetDir.isEmpty() || !QDir().mkpath(targetDir)) {
-            targetDir = QDir::tempPath() + "/rdp-clipboard";
-            QDir().mkpath(targetDir);
-        }
-
-        const size_t fdSize = sizeof(FILEDESCRIPTORW);
-        const BYTE* currentFd = data + sizeof(UINT32);
-
-        for (UINT32 i = 0; i < cItems; i++) {
-            if ((size_t)(currentFd - data + fdSize) > (size_t)formatDataResponse->common.dataLen) {
-                qWarning() << "CLIPRDR: Truncated FILEDESCRIPTORW at item" << i;
-                break;
-            }
-
-            const FILEDESCRIPTORW* fd = reinterpret_cast<const FILEDESCRIPTORW*>(currentFd);
-            QString baseName = QString::fromUtf16(reinterpret_cast<const char16_t*>(fd->cFileName));
-            // Sanitize filename to avoid path traversal
-            baseName = QFileInfo(baseName).fileName();
-            if (baseName.isEmpty()) {
-                baseName = QString("clipboard_file_%1").arg(i);
-            }
-
-            uint64_t fileSize = ((uint64_t)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
-            QString localPath = targetDir + "/" + baseName;
-
-            IncomingFileTransfer transfer;
-            transfer.fileName = baseName;
-            transfer.localPath = localPath;
-            transfer.fileSize = fileSize;
-            transfer.receivedBytes = 0;
-            transfer.localFile = nullptr;
-
-            server->m_incomingFiles.append(transfer);
-            qInfo() << "CLIPRDR: Queued incoming file [" << i << "]:" << baseName << "size:" << fileSize << "bytes -> target:" << localPath;
-
-            currentFd += fdSize;
-        }
-
-        if (!server->m_incomingFiles.isEmpty()) {
-            server->startNextIncomingFile(context);
-        }
-        return CHANNEL_RC_OK;
-    }
-
-    // Fall back to text formats
-    QString text;
-    if (context->lastRequestedFormatId == CF_UNICODETEXT) {
-        text = QString::fromUtf16(
-            reinterpret_cast<const char16_t*>(formatDataResponse->requestedFormatData),
-            formatDataResponse->common.dataLen / sizeof(char16_t)
-        );
-    } else {
-        text = QString::fromUtf8(
-            reinterpret_cast<const char*>(formatDataResponse->requestedFormatData),
-            formatDataResponse->common.dataLen
-        );
-    }
-    while (!text.isEmpty() && text.endsWith(QChar('\0'))) {
-        text.chop(1);
-    }
-    if (!text.isEmpty()) {
-        qInfo() << "CLIPRDR: Received text from client (" << text.length() << "chars):" << text.left(40);
-        {
-            QMutexLocker locker(&server->m_cliprdrMutex);
-            server->m_lastHostClipboardText = text;
-            server->m_outgoingFiles.clear();
-            server->m_outgoingFgdData.clear();
-        }
-        emit server->clientClipboardReceived(text);
-    }
-
-    return CHANNEL_RC_OK;
-}
-
-void RdpServer::startNextIncomingFile(CliprdrServerContext* context)
-{
-    while (m_currentIncomingFileIndex < (uint32_t)m_incomingFiles.size()) {
-        IncomingFileTransfer& item = m_incomingFiles[m_currentIncomingFileIndex];
-
-        if (!item.localFile) {
-            item.localFile = new QFile(item.localPath);
-            if (!item.localFile->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                qWarning() << "CLIPRDR: Failed to open target file for writing:" << item.localPath;
-                delete item.localFile;
-                item.localFile = nullptr;
-                m_currentIncomingFileIndex++;
-                continue;
-            }
-        }
-
-        if (item.fileSize == 0) {
-            item.localFile->close();
-            delete item.localFile;
-            item.localFile = nullptr;
-            m_completedIncomingFilePaths.append(item.localPath);
-            m_currentIncomingFileIndex++;
-            continue;
-        }
-
-        // Request initial chunk
-        CLIPRDR_FILE_CONTENTS_REQUEST req;
-        memset(&req, 0, sizeof(req));
-        req.common.msgType = CB_FILECONTENTS_REQUEST;
-        req.streamId = ++m_fileStreamId;
-        req.listIndex = m_currentIncomingFileIndex;
-        req.dwFlags = FILECONTENTS_RANGE;
-        req.nPositionLow = 0;
-        req.nPositionHigh = 0;
-        req.cbRequested = (UINT32)std::min((uint64_t)65536, item.fileSize);
-
-        qInfo() << "CLIPRDR: Requesting initial chunk for file [" << m_currentIncomingFileIndex << "]"
-                << item.fileName << "size:" << req.cbRequested << "streamId:" << req.streamId;
-        context->ServerFileContentsRequest(context, &req);
-        return;
-    }
-
-    // All files completed!
-    if (!m_completedIncomingFilePaths.isEmpty()) {
-        qInfo() << "CLIPRDR: All incoming files received (" << m_completedIncomingFilePaths.size() << "files):" << m_completedIncomingFilePaths;
-        emit clientFilesReceived(m_completedIncomingFilePaths);
-        // Free memory and temporary structures now that transmission is finished
-        m_incomingFiles.clear();
-        m_completedIncomingFilePaths.clear();
-    }
-}
-
-UINT RdpServer::cliprdr_client_file_contents_request(CliprdrServerContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest)
-{
-    RdpServer* server = static_cast<RdpServer*>(context->custom);
-    if (!server) return CHANNEL_RC_OK;
-
-    qInfo() << "CLIPRDR: ClientFileContentsRequest: listIndex=" << fileContentsRequest->listIndex
-            << "dwFlags=" << fileContentsRequest->dwFlags
-            << "streamId=" << fileContentsRequest->streamId
-            << "cbRequested=" << fileContentsRequest->cbRequested;
-
-    CLIPRDR_FILE_CONTENTS_RESPONSE resp;
-    memset(&resp, 0, sizeof(resp));
-    resp.common.msgType = CB_FILECONTENTS_RESPONSE;
-    resp.streamId = fileContentsRequest->streamId;
-
-    QMutexLocker locker(&server->m_cliprdrMutex);
-    if (fileContentsRequest->listIndex >= (UINT32)server->m_outgoingFiles.size()) {
-        qWarning() << "CLIPRDR: Invalid listIndex in ClientFileContentsRequest:" << fileContentsRequest->listIndex;
-        resp.common.msgFlags = CB_RESPONSE_FAIL;
-        context->ServerFileContentsResponse(context, &resp);
-        return CHANNEL_RC_OK;
-    }
-
-    QString filePath = server->m_outgoingFiles[fileContentsRequest->listIndex];
-    QFileInfo fi(filePath);
-    if (!fi.exists()) {
-        qWarning() << "CLIPRDR: File does not exist:" << filePath;
-        resp.common.msgFlags = CB_RESPONSE_FAIL;
-        context->ServerFileContentsResponse(context, &resp);
-        return CHANNEL_RC_OK;
-    }
-
-    if (fileContentsRequest->dwFlags & FILECONTENTS_SIZE) {
-        uint64_t fileSize = fi.size();
-        resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.cbRequested = sizeof(uint64_t);
-        resp.requestedData = reinterpret_cast<const BYTE*>(&fileSize);
-        context->ServerFileContentsResponse(context, &resp);
-        qInfo() << "CLIPRDR: Responded to FILECONTENTS_SIZE for file [" << fileContentsRequest->listIndex << "]:" << fileSize << "bytes";
-        return CHANNEL_RC_OK;
-    }
-
-    if (fileContentsRequest->dwFlags & FILECONTENTS_RANGE) {
-        QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly)) {
-            qWarning() << "CLIPRDR: Could not open file for reading:" << filePath;
-            resp.common.msgFlags = CB_RESPONSE_FAIL;
-            context->ServerFileContentsResponse(context, &resp);
-            return CHANNEL_RC_OK;
-        }
-
-        uint64_t offset = ((uint64_t)fileContentsRequest->nPositionHigh << 32) | fileContentsRequest->nPositionLow;
-        if (!file.seek(offset)) {
-            qWarning() << "CLIPRDR: Could not seek to offset:" << offset << "in" << filePath;
-            resp.common.msgFlags = CB_RESPONSE_FAIL;
-            context->ServerFileContentsResponse(context, &resp);
-            return CHANNEL_RC_OK;
-        }
-
-        QByteArray buffer = file.read(fileContentsRequest->cbRequested);
-        resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.cbRequested = buffer.size();
-        resp.requestedData = reinterpret_cast<const BYTE*>(buffer.constData());
-        context->ServerFileContentsResponse(context, &resp);
-        qInfo() << "CLIPRDR: Responded to FILECONTENTS_RANGE at offset:" << offset << "sent:" << buffer.size() << "bytes";
-        return CHANNEL_RC_OK;
-    }
-
-    resp.common.msgFlags = CB_RESPONSE_FAIL;
-    context->ServerFileContentsResponse(context, &resp);
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_file_contents_response(CliprdrServerContext* context, const CLIPRDR_FILE_CONTENTS_RESPONSE* fileContentsResponse)
-{
-    RdpServer* server = static_cast<RdpServer*>(context->custom);
-    if (!server) return CHANNEL_RC_OK;
-
-    if (server->m_currentIncomingFileIndex >= (uint32_t)server->m_incomingFiles.size()) {
-        qWarning() << "CLIPRDR: Unexpected file contents response, no active file";
-        return CHANNEL_RC_OK;
-    }
-
-    IncomingFileTransfer& item = server->m_incomingFiles[server->m_currentIncomingFileIndex];
-
-    if (!(fileContentsResponse->common.msgFlags & CB_RESPONSE_OK)) {
-        qWarning() << "CLIPRDR: File contents response failed for file" << item.fileName;
-        if (item.localFile) {
-            item.localFile->close();
-            delete item.localFile;
-            item.localFile = nullptr;
-        }
-        server->m_currentIncomingFileIndex++;
-        server->startNextIncomingFile(context);
-        return CHANNEL_RC_OK;
-    }
-
-    if (item.localFile && fileContentsResponse->cbRequested > 0 && fileContentsResponse->requestedData) {
-        qint64 written = item.localFile->write(reinterpret_cast<const char*>(fileContentsResponse->requestedData),
-                                               fileContentsResponse->cbRequested);
-        if (written > 0) {
-            item.receivedBytes += written;
-        }
-    }
-
-    if (item.receivedBytes >= item.fileSize) {
-        // File is complete!
-        qInfo() << "CLIPRDR: Completed transfer of file:" << item.localPath << "(" << item.receivedBytes << "bytes)";
-        if (item.localFile) {
-            item.localFile->close();
-            delete item.localFile;
-            item.localFile = nullptr;
-        }
-        server->m_completedIncomingFilePaths.append(item.localPath);
-        server->m_currentIncomingFileIndex++;
-        server->startNextIncomingFile(context);
-    } else {
-        // Request next chunk
-        uint64_t remaining = item.fileSize - item.receivedBytes;
-        UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
-
-        CLIPRDR_FILE_CONTENTS_REQUEST req;
-        memset(&req, 0, sizeof(req));
-        req.common.msgType = CB_FILECONTENTS_REQUEST;
-        req.streamId = ++server->m_fileStreamId;
-        req.listIndex = server->m_currentIncomingFileIndex;
-        req.dwFlags = FILECONTENTS_RANGE;
-        req.nPositionLow = (UINT32)(item.receivedBytes & 0xFFFFFFFF);
-        req.nPositionHigh = (UINT32)(item.receivedBytes >> 32);
-        req.cbRequested = chunkSize;
-
-        context->ServerFileContentsRequest(context, &req);
-    }
-
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_lock_clipboard_data(CliprdrServerContext* context, const CLIPRDR_LOCK_CLIPBOARD_DATA* lockClipboardData)
-{
-    Q_UNUSED(context);
-    Q_UNUSED(lockClipboardData);
-    return CHANNEL_RC_OK;
-}
-
-UINT RdpServer::cliprdr_client_unlock_clipboard_data(CliprdrServerContext* context, const CLIPRDR_UNLOCK_CLIPBOARD_DATA* unlockClipboardData)
-{
-    Q_UNUSED(context);
-    Q_UNUSED(unlockClipboardData);
-    return CHANNEL_RC_OK;
-}
-
 void RdpServer::onHostClipboardChanged(const QString &text)
 {
-    QMutexLocker locker(&m_cliprdrMutex);
-    if (m_lastHostClipboardText == text && m_outgoingFiles.isEmpty()) return;
-    m_lastHostClipboardText = text;
-    m_outgoingFiles.clear();
-    m_outgoingFgdData.clear();
-
-    if (!m_cliprdrContext || !m_cliprdrReady) return;
-
-    qInfo() << "CLIPRDR: Host clipboard changed (" << text.length() << "chars), announcing ServerFormatList";
-
-    CLIPRDR_FORMAT_LIST formatList;
-    memset(&formatList, 0, sizeof(formatList));
-    CLIPRDR_FORMAT formats[2];
-    formats[0].formatId = CF_UNICODETEXT;
-    formats[0].formatName = nullptr;
-    formats[1].formatId = CF_TEXT;
-    formats[1].formatName = nullptr;
-
-    formatList.common.msgType = CB_FORMAT_LIST;
-    formatList.common.msgFlags = 0;
-    formatList.numFormats = 2;
-    formatList.formats = formats;
-
-    m_cliprdrContext->ServerFormatList(m_cliprdrContext, &formatList);
+    m_cliprdrChannel.onHostClipboardChanged(text);
 }
 
 void RdpServer::onHostClipboardFilesChanged(const QStringList &filePaths)
 {
-    QStringList validFiles;
-    for (const QString& path : filePaths) {
-        if (QFileInfo::exists(path)) {
-            validFiles.append(path);
-        }
-    }
-
-    if (validFiles.isEmpty()) return;
-
-    QMutexLocker locker(&m_cliprdrMutex);
-    m_outgoingFiles = validFiles;
-
-    // Build FileGroupDescriptorW payload
-    UINT32 cItems = validFiles.size();
-    size_t headerSize = sizeof(UINT32);
-    size_t itemSize = sizeof(FILEDESCRIPTORW);
-    size_t totalSize = headerSize + cItems * itemSize;
-
-    m_outgoingFgdData.resize(totalSize);
-    m_outgoingFgdData.fill(0);
-
-    BYTE* ptr = reinterpret_cast<BYTE*>(m_outgoingFgdData.data());
-    *reinterpret_cast<UINT32*>(ptr) = cItems;
-    ptr += headerSize;
-
-    for (int i = 0; i < validFiles.size(); i++) {
-        QFileInfo fi(validFiles[i]);
-        FILEDESCRIPTORW* fd = reinterpret_cast<FILEDESCRIPTORW*>(ptr + i * itemSize);
-        fd->dwFlags = FD_FILESIZE | FD_WRITESTIME | FD_ATTRIBUTES;
-        fd->dwFileAttributes = 0x00000080; // FILE_ATTRIBUTE_NORMAL
-        uint64_t sz = fi.size();
-        fd->nFileSizeLow = (DWORD)(sz & 0xFFFFFFFF);
-        fd->nFileSizeHigh = (DWORD)(sz >> 32);
-
-        QString fileName = fi.fileName();
-        int copyLen = static_cast<int>(std::min<qsizetype>(fileName.length(), 259));
-        memcpy(fd->cFileName, fileName.utf16(), copyLen * sizeof(char16_t));
-        fd->cFileName[copyLen] = 0;
-    }
-
-    m_lastHostClipboardText = validFiles.join("\n");
-
-    if (!m_cliprdrContext || !m_cliprdrReady) return;
-
-    qInfo() << "CLIPRDR: Host clipboard files changed (" << validFiles.size() << "files), announcing ServerFormatList";
-
-    CLIPRDR_FORMAT_LIST formatList;
-    memset(&formatList, 0, sizeof(formatList));
-    CLIPRDR_FORMAT formats[4];
-    formats[0].formatId = CF_UNICODETEXT;
-    formats[0].formatName = nullptr;
-    formats[1].formatId = CF_TEXT;
-    formats[1].formatName = nullptr;
-    formats[2].formatId = m_formatFileGroupDescriptorW;
-    formats[2].formatName = const_cast<char*>("FileGroupDescriptorW");
-    formats[3].formatId = m_formatFileContents;
-    formats[3].formatName = const_cast<char*>("FileContents");
-
-    formatList.common.msgType = CB_FORMAT_LIST;
-    formatList.common.msgFlags = 0;
-    formatList.numFormats = 4;
-    formatList.formats = formats;
-
-    m_cliprdrContext->ServerFormatList(m_cliprdrContext, &formatList);
+    m_cliprdrChannel.onHostClipboardFilesChanged(filePaths);
 }
 
 void RdpServer::checkNetworkAdaptation()
@@ -2057,15 +1217,11 @@ void RdpServer::checkNetworkAdaptation()
     }
 }
 
-void RdpServer::onKlipperClipboardUpdated()
-{
-    // No-op: Native QClipboard handles Wayland clipboard synchronization without blocking D-Bus calls
-}
-
 void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 {
-    qInfo() << "RDPSND channel activated by client";
     if (!context) return;
+    qInfo() << "RDPSND channel activated by client (version:" << context->clientVersion
+            << "caps: 0x" + QString::number(context->capsFlags, 16) << ")";
 
     RdpServer* server = static_cast<RdpServer*>(context->data);
     if (!server) return;
@@ -2130,7 +1286,7 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 
         // MUST set latency and src_format BEFORE SelectFormat, because SelectFormat
         // internally computes out_frames = src_format->nSamplesPerSec * latency / 1000
-        context->latency = 20; // Match PulseAudio 20ms fragment size exactly
+        context->latency = 20; // 20ms fragment size for smooth low-latency jitter-free playback
 
         // Update src_format to match the selected sample rate
         if (selectedRate == 44100) {
@@ -2141,18 +1297,29 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
 
         context->SelectFormat(context, static_cast<UINT16>(selectedIndex));
 
-        // Set volume to maximum after format is selected
-        if (context->SetVolume) {
-            context->SetVolume(context, 0xFFFF, 0xFFFF);
-        }
+        // NOTE: Do NOT call SetVolume(0xFFFF) — it forcibly sets the client OS master volume to 100%,
+        // which causes ear-splitting loudness and digital clipping on the client!
+        // Leaving client volume untouched preserves the user's preferred local volume level.
 
         server->m_audioSampleRate = selectedRate;
         server->m_audioFramesSent = 0;
+        server->m_audioTimestamp = 0;
         server->m_audioReady = true;
 
         QMetaObject::invokeMethod(server, "audioConfigured", Qt::QueuedConnection,
                                   Q_ARG(uint32_t, selectedRate));
     }
+}
+
+UINT RdpServer::rdpsnd_confirm_block(RdpsndServerContext* context, BYTE confirmBlockNum, UINT16 wtimestamp)
+{
+    Q_UNUSED(wtimestamp);
+    if (!context) return CHANNEL_RC_OK;
+    RdpServer* server = static_cast<RdpServer*>(context->data);
+    if (!server) return CHANNEL_RC_OK;
+    server->m_clientConfirmsBlocks = true;
+    server->m_lastConfirmedBlock = confirmBlockNum;
+    return CHANNEL_RC_OK;
 }
 
 void RdpServer::sendAudioSamples(const QByteArray &data)
@@ -2164,12 +1331,72 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     size_t nframes = data.size() / 4;
     if (nframes == 0) return;
 
-    uint32_t rate = m_audioSampleRate.load();
-    if (rate == 0) rate = 48000;
+    // Client flow control: if client sends WaveConfirm (like Windows mstsc),
+    // monitor in-flight blocks. If > 10 blocks (200ms) remain unconsumed on client,
+    // skip transmission so client's queue drains rather than accumulating delay.
+    // Previous threshold of 5 (100ms) was too aggressive and caused frequent drops
+    // that made audio sound choppy or different from the source.
+    if (m_clientConfirmsBlocks) {
+        int inFlight = (m_rdpsndContext->block_no - m_lastConfirmedBlock.load() + 256) % 256;
+        if (inFlight > 10) {
+            m_audioDroppedPrevious = true;
+            m_audioFramesSent += nframes;
+            return;
+        }
+    }
 
-    // MS-RDPEA requires wTimeStamp to be the actual monotonic transmission time
-    UINT16 timestamp = static_cast<UINT16>(GetTickCount64() % 65536);
+    m_audioFramesSent += nframes;
 
-    m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, timestamp);
+    size_t totalSamples = data.size() / sizeof(int16_t);
+    const char* payloadData = data.constData();
+    size_t payloadSize = data.size();
+    QByteArray modifiedData;
+
+    // Packet Loss Concealment (PLC): if the previous packet was dropped to bound
+    // client latency, smoothly bridge the first 64 samples (1.3ms) from the last
+    // played sample value to completely eliminate audible clicks, pops, and crackle.
+    if (m_audioDroppedPrevious && totalSamples >= 128) {
+        modifiedData = data;
+        int16_t* samples = reinterpret_cast<int16_t*>(modifiedData.data());
+        for (size_t i = 0; i < 64; ++i) {
+            float alpha = static_cast<float>(i) / 64.0f;
+            samples[i * 2]     = static_cast<int16_t>(m_lastLeftSample  * (1.0f - alpha) + samples[i * 2]     * alpha);
+            samples[i * 2 + 1] = static_cast<int16_t>(m_lastRightSample * (1.0f - alpha) + samples[i * 2 + 1] * alpha);
+        }
+        m_audioDroppedPrevious = false;
+        m_lastLeftSample = samples[totalSamples - 2];
+        m_lastRightSample = samples[totalSamples - 1];
+        payloadData = modifiedData.constData();
+        payloadSize = modifiedData.size();
+    } else {
+        const int16_t* samples = reinterpret_cast<const int16_t*>(data.constData());
+        if (totalSamples >= 2) {
+            m_lastLeftSample = samples[totalSamples - 2];
+            m_lastRightSample = samples[totalSamples - 1];
+        }
+    }
+
+    // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),
+    // SendSamples2 transmits raw PCM audio directly via atomic SNDC_WAVE2 PDUs without
+    // going through FreeRDP's lossy DSP resampler or splitting/zeroing packet headers.
+    // Per MS-RDPEA 2.2.3.10, wTimeStamp and dwAudioTimeStamp must be set to the monotonic
+    // millisecond system clock from system boot so client jitter buffers keep perfect A/V sync.
+    const UINT64 nowMs = GetTickCount64();
+    const UINT16 timestamp16 = static_cast<UINT16>(nowMs % 65536);
+    const UINT32 timestamp32 = static_cast<UINT32>(nowMs & 0xFFFFFFFF);
+
+    if (m_rdpsndContext->clientVersion >= 8 && m_rdpsndContext->SendSamples2) {
+        UINT rc = m_rdpsndContext->SendSamples2(m_rdpsndContext,
+                                               m_rdpsndContext->selected_client_format,
+                                               payloadData,
+                                               payloadSize,
+                                               timestamp16,
+                                               timestamp32);
+        if (rc == CHANNEL_RC_OK) {
+            return;
+        }
+    }
+
+    m_rdpsndContext->SendSamples(m_rdpsndContext, payloadData, nframes, timestamp16);
 }
 

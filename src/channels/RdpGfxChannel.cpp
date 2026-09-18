@@ -58,6 +58,8 @@ bool RdpGfxChannel::initialize(HANDLE vcm, rdpContext* rdpcontext)
         m_gfxReady = false;
         m_surfaceId = 0;
         m_hasActiveSurface = false;
+        m_surfaceWidth = 0;
+        m_surfaceHeight = 0;
         m_frameId = 0;
         m_lastSentFrameId = 0;
         m_lastAckedFrameId = 0;
@@ -204,28 +206,25 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
     }
 
     if (m_waitingForKeyFrame) {
-        if (!isKeyFrame && m_droppedFramesWaitingForKey.load() < 8) {
-            m_droppedFramesWaitingForKey++;
+        if (!isKeyFrame) {
             return;
         }
         m_waitingForKeyFrame = false;
-        m_droppedFramesWaitingForKey = 0;
-        if (isKeyFrame) {
-            qInfo() << "RdpGfxChannel: Received clean IDR keyframe! Resuming video output.";
-        } else {
-            qInfo() << "RdpGfxChannel: Keyframe timeout reached, resuming video output.";
-        }
+        qInfo() << "RdpGfxChannel: Received clean IDR keyframe after surface reset! Resuming video output.";
     }
 
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
         if (isKeyFrame) {
             m_frameQueue.clear();
-        } else if (m_frameQueue.size() > 8) {
+        } else if (m_frameQueue.size() > 30) {
+            // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
+            // In H.264, dropping a delta frame breaks the reference chain in mstsc,
+            // permanently freezing the client video stream until an IDR frame arrives.
             m_frameQueue.clear();
             m_waitingForKeyFrame = true;
-            m_droppedFramesWaitingForKey = 0;
-            emit keyFrameNeeded();
+            qWarning() << "RdpGfxChannel: Frame queue overflow (" << m_frameQueue.size()
+                       << "frames), cleared queue and waiting for IDR keyframe to prevent client freeze";
             return;
         }
         m_frameQueue.push_back({data, isKeyFrame});
@@ -243,15 +242,27 @@ void RdpGfxChannel::startSubmissionThread()
             QueuedVideoFrame frame;
             {
                 std::unique_lock<std::mutex> lock(m_frameQueueMutex);
-                m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(5), [this]() {
-                    return !m_submissionRunning || (!m_frameQueue.empty() && hasInFlightCapacity());
+                m_frameQueueCond.wait(lock, [this]() {
+                    return !m_submissionRunning || !m_frameQueue.empty();
                 });
 
                 if (!m_submissionRunning) {
                     break;
                 }
 
-                if (m_frameQueue.empty() || !hasInFlightCapacity() || !m_gfxReady || m_outputSuppressed) {
+                if (!hasInFlightCapacity()) {
+                    m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(10), [this]() {
+                        return !m_submissionRunning || hasInFlightCapacity();
+                    });
+                    if (!m_submissionRunning) {
+                        break;
+                    }
+                    if (!hasInFlightCapacity()) {
+                        continue;
+                    }
+                }
+
+                if (m_frameQueue.empty() || !m_gfxReady || m_outputSuppressed) {
                     continue;
                 }
 
@@ -287,12 +298,30 @@ void RdpGfxChannel::stopSubmissionThread()
 bool RdpGfxChannel::hasInFlightCapacity()
 {
     std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    if (m_pendingFrames.size() < 6) {
+    // Dynamically adjust in-flight frame limit based on network RTT:
+    // Low latency LAN (< 20ms): limit to 4 frames for minimal buffering and ultra-low input-to-display latency.
+    // Higher latency WAN/Wi-Fi (40-100ms): scale up to 8-10 frames so 60 FPS bandwidth-delay product is saturated without stalls.
+    int64_t rtt = m_lastRttMs.load();
+    size_t maxInFlight = 6;
+    if (rtt > 0) {
+        if (rtt <= 20) {
+            maxInFlight = 4;
+        } else if (rtt <= 50) {
+            maxInFlight = 6;
+        } else if (rtt <= 90) {
+            maxInFlight = 8;
+        } else {
+            maxInFlight = 10;
+        }
+    }
+
+    if (m_pendingFrames.size() < maxInFlight) {
         return true;
     }
     const auto now = std::chrono::steady_clock::now();
+    int64_t timeoutMs = std::max<int64_t>(80, rtt * 2);
     if (!m_pendingFrameTimestamps.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 80) {
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > timeoutMs) {
         m_pendingFrames.clear();
         m_pendingFrameTimestamps.clear();
         return true;
@@ -313,8 +342,8 @@ void RdpGfxChannel::submitFrame(const QueuedVideoFrame &frame)
     }
     freerdp_peer* peer = rdpctx->peer;
     rdpSettings* settings = peer->context->settings;
-    UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
-    UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+    UINT32 width = (m_surfaceWidth > 0) ? m_surfaceWidth : freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
+    UINT32 height = (m_surfaceHeight > 0) ? m_surfaceHeight : freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
 
     const auto now = QDateTime::currentDateTimeUtc().time();
     UINT32 timestamp = (now.hour() << 22) | (now.minute() << 16) | (now.second() << 10) | now.msec();
@@ -430,8 +459,8 @@ UINT RdpGfxChannel::capsAdvertiseCallback(RdpgfxServerContext* context, const RD
         int priority = -1;
         switch (capsSet->version) {
             case RDPGFX_CAPVERSION_107:
-                priority = 1007;
-                break;
+                // Cap at 10.6 for AVC420: 10.7 requires AVC444v2 which decoders reject when sent AVC420
+                continue;
             case RDPGFX_CAPVERSION_106:
             case RDPGFX_CAPVERSION_106_ERR:
                 priority = 1006;
@@ -560,8 +589,17 @@ UINT RdpGfxChannel::frameAcknowledgeCallback(RdpgfxServerContext* context, const
     channel->m_lastAckedFrameId = frameAcknowledge->frameId;
     {
         std::lock_guard<std::mutex> lock(channel->m_pendingFramesMutex);
-        channel->m_pendingFrames.remove(frameAcknowledge->frameId);
-        if (!channel->m_pendingFrameTimestamps.empty()) {
+        // Cumulative ACK: prune all pending frame IDs <= acknowledged frameId (MS-RDPEGFX 3.2.5.1)
+        auto it = channel->m_pendingFrames.begin();
+        while (it != channel->m_pendingFrames.end()) {
+            if (*it <= frameAcknowledge->frameId) {
+                it = channel->m_pendingFrames.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        while (!channel->m_pendingFrameTimestamps.empty() &&
+               channel->m_pendingFrameTimestamps.front().first <= frameAcknowledge->frameId) {
             auto sentTime = channel->m_pendingFrameTimestamps.front().second;
             auto now = std::chrono::steady_clock::now();
             rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sentTime).count();
@@ -583,8 +621,17 @@ UINT RdpGfxChannel::qoeFrameAcknowledgeCallback(RdpgfxServerContext* context, co
     channel->m_lastAckedFrameId = qoeFrameAcknowledge->frameId;
     {
         std::lock_guard<std::mutex> lock(channel->m_pendingFramesMutex);
-        channel->m_pendingFrames.remove(qoeFrameAcknowledge->frameId);
-        if (!channel->m_pendingFrameTimestamps.empty()) {
+        // Cumulative ACK: prune all pending frame IDs <= acknowledged frameId (MS-RDPEGFX 3.2.5.1)
+        auto it = channel->m_pendingFrames.begin();
+        while (it != channel->m_pendingFrames.end()) {
+            if (*it <= qoeFrameAcknowledge->frameId) {
+                it = channel->m_pendingFrames.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        while (!channel->m_pendingFrameTimestamps.empty() &&
+               channel->m_pendingFrameTimestamps.front().first <= qoeFrameAcknowledge->frameId) {
             auto sentTime = channel->m_pendingFrameTimestamps.front().second;
             auto now = std::chrono::steady_clock::now();
             rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sentTime).count();

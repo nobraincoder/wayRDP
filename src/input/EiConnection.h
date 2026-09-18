@@ -60,7 +60,7 @@ public:
     [[nodiscard]] bool hasKeyboard() const;
 
     void sendPointerMotionAbsolute(double x, double y, const QSize &streamSize, const QString &mappingId = QString());
-    void sendPointerButton(int button, uint state);
+    bool sendPointerButton(int button, uint state);
     void sendPointerAxis(double dx, double dy);
     void sendPointerAxisDiscrete(uint axis, int steps);
     void sendKeyboardKeycode(int keycode, uint state);
@@ -72,7 +72,6 @@ signals:
 
 private slots:
     void onEisReadyRead();
-    void onScrollStopTimeout();
 
 private:
     void processEisEvents();
@@ -85,8 +84,6 @@ private:
     QString m_lastMappingId;
     std::unique_ptr<EiDevice> m_keyboardDevice;
     std::unique_ptr<EiDevice> m_textDevice;
-    QTimer *m_scrollStopTimer{nullptr};
-    bool m_isScrolling{false};
 };
 
 #endif // EICONNECTION_H

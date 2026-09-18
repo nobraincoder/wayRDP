@@ -57,9 +57,10 @@ void SystemInputSettings::reload()
     // 3. Apply Environment overrides
     applyEnvironmentOverrides();
 
-    qInfo() << QString("SystemInputSettings: NaturalScroll=%1, ScrollFactor=%2, LeftHanded=%3, Cursor=%4(%5px), EffectiveScale=%6")
+    qInfo() << QString("SystemInputSettings: NaturalScroll=%1, ScrollFactor=%2, WindowsScrollScale=%3, LeftHanded=%4, Cursor=%5(%6px), EffectiveScale=%7")
                    .arg(m_naturalScroll ? "true" : "false")
                    .arg(m_scrollFactor)
+                   .arg(m_windowsScrollScale)
                    .arg(m_leftHanded ? "true" : "false")
                    .arg(m_cursorTheme)
                    .arg(m_cursorSize)
@@ -198,6 +199,14 @@ void SystemInputSettings::applyEnvironmentOverrides()
         m_naturalScroll = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
     }
 
+    if (qEnvironmentVariableIsSet("RDP_WINDOWS_SCROLL_SCALE")) {
+        bool ok = false;
+        double scale = qEnvironmentVariable("RDP_WINDOWS_SCROLL_SCALE").toDouble(&ok);
+        if (ok && scale > 0.0) {
+            m_windowsScrollScale = scale;
+        }
+    }
+
     if (qEnvironmentVariableIsSet("RDP_LEFT_HANDED")) {
         QString val = qEnvironmentVariable("RDP_LEFT_HANDED").trimmed();
         m_leftHanded = (val == "1" || val.compare("true", Qt::CaseInsensitive) == 0);
@@ -237,7 +246,9 @@ double SystemInputSettings::effectiveScrollScale() const
     if (m_hasCustomScale) {
         return m_customScale;
     }
-    return 0.125 * m_scrollFactor;
+    // GNOME Remote Desktop standard: (10.0 logical px / 120 RDP wheel units) * KDE scroll factor.
+    // Provides smooth high-DPI scaling across 1x, 1.5x, 2x displays.
+    return (10.0 / 120.0) * m_scrollFactor;
 }
 
 double SystemInputSettings::computeVerticalDelta(int16_t rawDelta) const

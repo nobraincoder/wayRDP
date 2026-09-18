@@ -844,6 +844,9 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
     if (m_sessionPath.isEmpty() || !m_displayActive)
         return;
 
+    m_lastPointerX = x;
+    m_lastPointerY = y;
+
     if (m_eiConnection && m_eiConnection->hasPointer()) {
         m_eiConnection->sendPointerMotionAbsolute(x, y, m_requestedSize, m_streamMappingId);
         return;
@@ -857,6 +860,14 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
     // but KWin's logical space for the output is (width / scale, height / scale) (e.g. 1728x1084).
     double logicalX = (m_requestedScale > 0.0) ? (x / m_requestedScale) : x;
     double logicalY = (m_requestedScale > 0.0) ? (y / m_requestedScale) : y;
+
+    // Rate-limit D-Bus fallback to 120 Hz to prevent flooding the session bus with 1000 Hz mouse events
+    static auto lastDbusMotionTime = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDbusMotionTime).count() < 8) {
+        return;
+    }
+    lastDbusMotionTime = now;
 
     QDBusMessage message = QDBusMessage::createMethodCall(
         "org.freedesktop.portal.Desktop",
@@ -875,29 +886,53 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
     if (m_sessionPath.isEmpty() || !m_displayActive)
         return;
 
+    bool sentViaEi = false;
     if (m_eiConnection && m_eiConnection->hasPointer()) {
-        m_eiConnection->sendPointerButton(button, state);
-        return;
+        sentViaEi = m_eiConnection->sendPointerButton(button, state);
     }
 
-    QDBusMessage message = QDBusMessage::createMethodCall(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.RemoteDesktop",
-        "NotifyPointerButton"
-    );
+    if (!sentViaEi) {
+        QDBusMessage message = QDBusMessage::createMethodCall(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.RemoteDesktop",
+            "NotifyPointerButton"
+        );
 
-    QVariantMap options;
-    message.setArguments({QDBusObjectPath(m_sessionPath), options, button, state});
-    QDBusPendingCall pcall = QDBusConnection::sessionBus().asyncCall(message);
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(pcall, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [button, state](QDBusPendingCallWatcher *w) {
-        QDBusPendingReply<> reply = *w;
-        w->deleteLater();
-        if (reply.isError()) {
-            qWarning() << "NotifyPointerButton DBus error:" << reply.error().message() << "button:" << button << "state:" << state;
-        }
-    });
+        QVariantMap options;
+        message.setArguments({QDBusObjectPath(m_sessionPath), options, button, state});
+        QDBusPendingCall pcall = QDBusConnection::sessionBus().asyncCall(message);
+        QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(pcall, this);
+        connect(watcher, &QDBusPendingCallWatcher::finished, this, [button, state](QDBusPendingCallWatcher *w) {
+            QDBusPendingReply<> reply = *w;
+            w->deleteLater();
+            if (reply.isError()) {
+                qWarning() << "NotifyPointerButton DBus error:" << reply.error().message() << "button:" << button << "state:" << state;
+            }
+        });
+    }
+
+    // When releasing a mouse button (e.g. desktop area selection rubberband, dragging window/files,
+    // closing dropdown menus), Plasma/apps tear down the overlay/selection box with an OpacityAnimator.
+    // If the user stops moving the mouse immediately, KWin Wayland ignores zero-delta motion (m_pos == pos).
+    // By nudging the pointer position by 1 pixel and back across the 280ms animation lifecycle,
+    // KWin's PointerInputRedirection processes motion, updates pointer focus, and forces the compositor
+    // to render and transmit the final clean frame immediately.
+    if (state == 0) {
+        double deltaX = (m_lastPointerX + 1.0 < m_requestedSize.width()) ? 1.0 : -1.0;
+        QTimer::singleShot(60, this, [this, deltaX]() {
+            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
+        });
+        QTimer::singleShot(120, this, [this]() {
+            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
+        });
+        QTimer::singleShot(200, this, [this, deltaX]() {
+            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
+        });
+        QTimer::singleShot(280, this, [this]() {
+            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
+        });
+    }
 }
 
 void KWinVirtualDisplay::doSendAxis(double dx, double dy)

@@ -26,6 +26,8 @@ private:
     std::atomic<bool> m_recording{false};
     std::atomic<uint32_t> m_sampleRate{48000};
     QThread *m_workerThread{nullptr};
+    QString m_originalDefaultSink;
+    uint32_t m_sinkModuleId{0};
 };
 
 #endif // QTAUDIOCONTROLLER_H

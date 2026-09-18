@@ -18,7 +18,7 @@ check_dependencies() {
     local missing=()
     echo "-> Checking build tools and dependencies..."
 
-    for cmd in cmake pkg-config gcc openssl kscreen-doctor; do
+    for cmd in cmake pkg-config gcc openssl kscreen-doctor pactl; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -35,13 +35,13 @@ check_dependencies() {
         echo -e "\n[WARNING] Some dependencies might be missing: ${missing[*]}"
         echo "Please install prerequisites before building:"
         if command -v pacman &>/dev/null; then
-            echo "  Arch/EndeavourOS: sudo pacman -S --needed base-devel cmake extra-cmake-modules pkgconf qt6-base qt6-multimedia kguiaddons kpipewire freerdp libxkbcommon pam openssl libpulse libkscreen"
+            echo "  Arch/EndeavourOS: sudo pacman -S --needed base-devel cmake extra-cmake-modules pkgconf qt6-base qt6-multimedia kguiaddons kpipewire freerdp libxkbcommon libei pam openssl libpulse libkscreen"
         elif command -v dnf &>/dev/null; then
-            echo "  Fedora:           sudo dnf install cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel kpipewire-devel freerdp-devel libwinpr-devel libxkbcommon-devel libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel libkscreen-devel libkscreen"
+            echo "  Fedora:           sudo dnf install cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel kpipewire-devel freerdp-devel libwinpr-devel libxkbcommon-devel libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel libkscreen-devel libkscreen pulseaudio-utils"
         elif command -v apt-get &>/dev/null; then
-            echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev freerdp3-dev libwinpr3-dev libxkbcommon-dev libpam0g-dev libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin"
+            echo "  Ubuntu/Debian:    sudo apt-get install build-essential cmake extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev libkpipewire-dev freerdp3-dev libwinpr3-dev libxkbcommon-dev libei-dev libpam0g-dev libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin pulseaudio-utils"
         elif command -v zypper &>/dev/null; then
-            echo "  openSUSE:         sudo zypper install cmake extra-cmake-modules gcc-c++ pkg-config qt6-base-devel qt6-multimedia-devel kf6-kguiaddons-devel libkpipewire-devel freerdp-devel libwinpr3-devel libxkbcommon-devel libei-devel pam-devel libopenssl-devel openssl libpulse-devel libkscreen6-devel libkscreen6-plugin"
+            echo "  openSUSE:         sudo zypper install cmake extra-cmake-modules gcc-c++ pkg-config qt6-base-devel qt6-multimedia-devel kf6-kguiaddons-devel libkpipewire-devel freerdp-devel libwinpr3-devel libxkbcommon-devel libei-devel pam-devel libopenssl-devel openssl libpulse-devel libkscreen6-devel libkscreen6-plugin pulseaudio-utils"
         fi
         echo ""
         read -r -p "Do you want to continue anyway? [y/N] " response
@@ -89,8 +89,19 @@ if [ ! -f "${CONFIG_FILE}" ]; then
 # Server listening port (default: 3390, keeps 3389 free for official KRdp)
 RDP_PORT=3390
 
-# Fixed RDP password (leave commented out to authenticate using system PAM password)
+# Fixed RDP password (strongly recommended for Windows mstsc client compatibility)
+# Setting RDP_PASSWORD enables native Network Level Authentication (NLA) for mstsc clients.
+# Leave commented out to authenticate using system PAM password via TLS.
 # RDP_PASSWORD=your_secure_password
+
+# Desktop Audio Redirection (1 = enabled, 0 = disabled)
+RDP_AUDIO=1
+
+# Audio Volume Headroom Scaling (default: 1.0)
+RDP_AUDIO_VOLUME=1.0
+
+# Windows Client Scroll Multiplier (default: 0.5 to normalize 120-unit detent scrolling)
+RDP_WINDOWS_SCROLL_SCALE=0.5
 
 # Hardware Video Encoder Backend (vaapi, nvenc, x264)
 RDP_ENCODER=vaapi
