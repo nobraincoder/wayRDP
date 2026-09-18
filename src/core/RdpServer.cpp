@@ -1328,8 +1328,12 @@ BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
     if (!server) return TRUE;
 
-    const auto stuck = server->m_pressedKeys;
-    server->m_pressedKeys.clear();
+    QSet<quint32> stuck;
+    {
+        QMutexLocker locker(&server->m_pressedKeysMutex);
+        stuck = server->m_pressedKeys;
+        server->m_pressedKeys.clear();
+    }
     for (auto keycode : stuck) {
         emit server->keyboardKeycode(static_cast<int>(keycode), 0);
     }
@@ -1458,10 +1462,13 @@ BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
     quint32 keycode = GetKeycodeFromVirtualKeyCode(virtualCode, WINPR_KEYCODE_TYPE_EVDEV);
 
     uint state = (flags & KBD_FLAGS_RELEASE) ? 0 : 1;
-    if (state == 0) {
-        server->m_pressedKeys.remove(keycode);
-    } else {
-        server->m_pressedKeys.insert(keycode);
+    {
+        QMutexLocker locker(&server->m_pressedKeysMutex);
+        if (state == 0) {
+            server->m_pressedKeys.remove(keycode);
+        } else {
+            server->m_pressedKeys.insert(keycode);
+        }
     }
 
     if (keycode > 0) {
@@ -1796,7 +1803,7 @@ void RdpServer::startNextIncomingFile(CliprdrServerContext* context)
 
         if (!item.localFile) {
             item.localFile = new QFile(item.localPath);
-            if (!item.localFile->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            if (!item.localFile->open(QIODevice::ReadWrite | QIODevice::Truncate)) {
                 qWarning() << "CLIPRDR: Failed to open target file for writing:" << item.localPath;
                 delete item.localFile;
                 item.localFile = nullptr;
@@ -1814,20 +1821,34 @@ void RdpServer::startNextIncomingFile(CliprdrServerContext* context)
             continue;
         }
 
-        // Request initial chunk
-        CLIPRDR_FILE_CONTENTS_REQUEST req;
-        memset(&req, 0, sizeof(req));
-        req.common.msgType = CB_FILECONTENTS_REQUEST;
-        req.streamId = ++m_fileStreamId;
-        req.listIndex = m_currentIncomingFileIndex;
-        req.dwFlags = FILECONTENTS_RANGE;
-        req.nPositionLow = 0;
-        req.nPositionHigh = 0;
-        req.cbRequested = (UINT32)std::min((uint64_t)65536, item.fileSize);
+        item.requestedBytes = 0;
+        item.receivedBytes = 0;
+        item.inFlightRequests.clear();
 
-        qInfo() << "CLIPRDR: Requesting initial chunk for file [" << m_currentIncomingFileIndex << "]"
-                << item.fileName << "size:" << req.cbRequested << "streamId:" << req.streamId;
-        context->ServerFileContentsRequest(context, &req);
+        // Pipelining: Send up to 4 chunk requests in flight (256KB sliding window)
+        const size_t maxInFlight = 4;
+        while (item.inFlightRequests.size() < maxInFlight && item.requestedBytes < item.fileSize) {
+            uint64_t offset = item.requestedBytes;
+            uint64_t remaining = item.fileSize - item.requestedBytes;
+            UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
+
+            CLIPRDR_FILE_CONTENTS_REQUEST req;
+            memset(&req, 0, sizeof(req));
+            req.common.msgType = CB_FILECONTENTS_REQUEST;
+            req.streamId = ++m_fileStreamId;
+            req.listIndex = m_currentIncomingFileIndex;
+            req.dwFlags = FILECONTENTS_RANGE;
+            req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
+            req.nPositionHigh = (UINT32)(offset >> 32);
+            req.cbRequested = chunkSize;
+
+            item.inFlightRequests.insert(req.streamId, offset);
+            item.requestedBytes += chunkSize;
+
+            qInfo() << "CLIPRDR: Pipeline requesting chunk for file [" << m_currentIncomingFileIndex << "]"
+                    << item.fileName << "offset:" << offset << "size:" << req.cbRequested << "streamId:" << req.streamId;
+            context->ServerFileContentsRequest(context, &req);
+        }
         return;
     }
 
@@ -1928,6 +1949,7 @@ UINT RdpServer::cliprdr_client_file_contents_response(CliprdrServerContext* cont
 
     if (!(fileContentsResponse->common.msgFlags & CB_RESPONSE_OK)) {
         qWarning() << "CLIPRDR: File contents response failed for file" << item.fileName;
+        item.inFlightRequests.clear();
         if (item.localFile) {
             item.localFile->close();
             delete item.localFile;
@@ -1938,7 +1960,15 @@ UINT RdpServer::cliprdr_client_file_contents_response(CliprdrServerContext* cont
         return CHANNEL_RC_OK;
     }
 
+    uint64_t chunkOffset = item.receivedBytes;
+    auto it = item.inFlightRequests.find(fileContentsResponse->streamId);
+    if (it != item.inFlightRequests.end()) {
+        chunkOffset = it.value();
+        item.inFlightRequests.erase(it);
+    }
+
     if (item.localFile && fileContentsResponse->cbRequested > 0 && fileContentsResponse->requestedData) {
+        item.localFile->seek(chunkOffset);
         qint64 written = item.localFile->write(reinterpret_cast<const char*>(fileContentsResponse->requestedData),
                                                fileContentsResponse->cbRequested);
         if (written > 0) {
@@ -1949,6 +1979,7 @@ UINT RdpServer::cliprdr_client_file_contents_response(CliprdrServerContext* cont
     if (item.receivedBytes >= item.fileSize) {
         // File is complete!
         qInfo() << "CLIPRDR: Completed transfer of file:" << item.localPath << "(" << item.receivedBytes << "bytes)";
+        item.inFlightRequests.clear();
         if (item.localFile) {
             item.localFile->close();
             delete item.localFile;
@@ -1958,21 +1989,28 @@ UINT RdpServer::cliprdr_client_file_contents_response(CliprdrServerContext* cont
         server->m_currentIncomingFileIndex++;
         server->startNextIncomingFile(context);
     } else {
-        // Request next chunk
-        uint64_t remaining = item.fileSize - item.receivedBytes;
-        UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
+        // Replenish the pipeline: maintain up to 4 chunk requests in flight
+        const size_t maxInFlight = 4;
+        while (item.inFlightRequests.size() < maxInFlight && item.requestedBytes < item.fileSize) {
+            uint64_t offset = item.requestedBytes;
+            uint64_t remaining = item.fileSize - item.requestedBytes;
+            UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
 
-        CLIPRDR_FILE_CONTENTS_REQUEST req;
-        memset(&req, 0, sizeof(req));
-        req.common.msgType = CB_FILECONTENTS_REQUEST;
-        req.streamId = ++server->m_fileStreamId;
-        req.listIndex = server->m_currentIncomingFileIndex;
-        req.dwFlags = FILECONTENTS_RANGE;
-        req.nPositionLow = (UINT32)(item.receivedBytes & 0xFFFFFFFF);
-        req.nPositionHigh = (UINT32)(item.receivedBytes >> 32);
-        req.cbRequested = chunkSize;
+            CLIPRDR_FILE_CONTENTS_REQUEST req;
+            memset(&req, 0, sizeof(req));
+            req.common.msgType = CB_FILECONTENTS_REQUEST;
+            req.streamId = ++server->m_fileStreamId;
+            req.listIndex = server->m_currentIncomingFileIndex;
+            req.dwFlags = FILECONTENTS_RANGE;
+            req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
+            req.nPositionHigh = (UINT32)(offset >> 32);
+            req.cbRequested = chunkSize;
 
-        context->ServerFileContentsRequest(context, &req);
+            item.inFlightRequests.insert(req.streamId, offset);
+            item.requestedBytes += chunkSize;
+
+            context->ServerFileContentsRequest(context, &req);
+        }
     }
 
     return CHANNEL_RC_OK;
@@ -2266,25 +2304,33 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
 
     m_audioFramesSent += nframes;
 
-    QByteArray packetData = data;
-    int16_t* samples = reinterpret_cast<int16_t*>(packetData.data());
-    size_t totalSamples = packetData.size() / sizeof(int16_t);
+    size_t totalSamples = data.size() / sizeof(int16_t);
+    const char* payloadData = data.constData();
+    size_t payloadSize = data.size();
+    QByteArray modifiedData;
 
     // Packet Loss Concealment (PLC): if the previous packet was dropped to bound
     // client latency, smoothly bridge the first 64 samples (1.3ms) from the last
     // played sample value to completely eliminate audible clicks, pops, and crackle.
     if (m_audioDroppedPrevious && totalSamples >= 128) {
+        modifiedData = data;
+        int16_t* samples = reinterpret_cast<int16_t*>(modifiedData.data());
         for (size_t i = 0; i < 64; ++i) {
             float alpha = static_cast<float>(i) / 64.0f;
             samples[i * 2]     = static_cast<int16_t>(m_lastLeftSample  * (1.0f - alpha) + samples[i * 2]     * alpha);
             samples[i * 2 + 1] = static_cast<int16_t>(m_lastRightSample * (1.0f - alpha) + samples[i * 2 + 1] * alpha);
         }
         m_audioDroppedPrevious = false;
-    }
-
-    if (totalSamples >= 2) {
         m_lastLeftSample = samples[totalSamples - 2];
         m_lastRightSample = samples[totalSamples - 1];
+        payloadData = modifiedData.constData();
+        payloadSize = modifiedData.size();
+    } else {
+        const int16_t* samples = reinterpret_cast<const int16_t*>(data.constData());
+        if (totalSamples >= 2) {
+            m_lastLeftSample = samples[totalSamples - 2];
+            m_lastRightSample = samples[totalSamples - 1];
+        }
     }
 
     // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),
@@ -2299,8 +2345,8 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     if (m_rdpsndContext->clientVersion >= 8 && m_rdpsndContext->SendSamples2) {
         UINT rc = m_rdpsndContext->SendSamples2(m_rdpsndContext,
                                                m_rdpsndContext->selected_client_format,
-                                               packetData.constData(),
-                                               packetData.size(),
+                                               payloadData,
+                                               payloadSize,
                                                timestamp16,
                                                timestamp32);
         if (rc == CHANNEL_RC_OK) {
@@ -2308,6 +2354,6 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
         }
     }
 
-    m_rdpsndContext->SendSamples(m_rdpsndContext, packetData.constData(), nframes, timestamp16);
+    m_rdpsndContext->SendSamples(m_rdpsndContext, payloadData, nframes, timestamp16);
 }
 

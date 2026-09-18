@@ -242,6 +242,7 @@ void PipeWireStreamController::onStreamSizeChanged(const QSize &size)
 
 void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &packet)
 {
+    const QByteArray &data = packet.data();
     static int mismatchDropCount = 0;
     if (!m_targetResolution.isEmpty() && !m_currentStreamResolution.isEmpty() && !isResolutionMatching(m_currentStreamResolution, m_targetResolution)) {
         if (mismatchDropCount++ < 15) {
@@ -269,7 +270,7 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
 
     // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)
     // Non-keyframe delta packets > 40KB at 60 FPS indicate heavy motion
-    if (!packet.isKeyFrame() && packet.data().size() > 40 * 1024) {
+    if (!packet.isKeyFrame() && data.size() > 40 * 1024) {
         onMotionActivity();
     }
 
@@ -279,13 +280,13 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         double fps = (m_fpsFrameCount * 1000.0) / (elapsed - m_lastFpsLogTime);
         qInfo().noquote() << QString("PipeWireStreamController: Video stream running at %1 FPS | packet: %2 KB | keyframe: %3")
                                 .arg(fps, 0, 'f', 1)
-                                .arg(packet.data().size() / 1024.0, 0, 'f', 1)
+                                .arg(data.size() / 1024.0, 0, 'f', 1)
                                 .arg(packet.isKeyFrame() ? "true" : "false");
         m_fpsFrameCount = 0;
         m_lastFpsLogTime = elapsed;
     }
 
-    emit videoPacketEncoded(packet.data(), packet.isKeyFrame());
+    emit videoPacketEncoded(data, packet.isKeyFrame());
 }
 
 void PipeWireStreamController::onCursorChanged(const PipeWireCursor &cursor)

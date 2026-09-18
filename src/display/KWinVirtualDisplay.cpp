@@ -861,6 +861,14 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
     double logicalX = (m_requestedScale > 0.0) ? (x / m_requestedScale) : x;
     double logicalY = (m_requestedScale > 0.0) ? (y / m_requestedScale) : y;
 
+    // Rate-limit D-Bus fallback to 120 Hz to prevent flooding the session bus with 1000 Hz mouse events
+    static auto lastDbusMotionTime = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDbusMotionTime).count() < 8) {
+        return;
+    }
+    lastDbusMotionTime = now;
+
     QDBusMessage message = QDBusMessage::createMethodCall(
         "org.freedesktop.portal.Desktop",
         "/org/freedesktop/portal/desktop",

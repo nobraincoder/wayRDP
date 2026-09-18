@@ -279,7 +279,9 @@ void EiConnection::processEisEvents()
         }
         case EI_EVENT_DEVICE_ADDED:
             qInfo() << "EiConnection: Device added by EIS:" << ei_device_get_name(device);
-            if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE)) {
+            if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE) ||
+                ei_device_has_capability(device, EI_DEVICE_CAP_BUTTON) ||
+                ei_device_has_capability(device, EI_DEVICE_CAP_SCROLL)) {
                 m_pointerDevices.push_back(std::make_unique<EisPointerDevice>(device));
             }
             if (ei_device_has_capability(device, EI_DEVICE_CAP_KEYBOARD)) {

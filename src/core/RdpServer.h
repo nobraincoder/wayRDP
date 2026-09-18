@@ -166,8 +166,10 @@ public:
         QString fileName;
         QString localPath;
         uint64_t fileSize{0};
+        uint64_t requestedBytes{0};
         uint64_t receivedBytes{0};
         QFile* localFile{nullptr};
+        QHash<uint32_t, uint64_t> inFlightRequests;
     };
     QList<IncomingFileTransfer> m_incomingFiles;
     uint32_t m_currentIncomingFileIndex{0};
@@ -183,6 +185,7 @@ public:
         std::chrono::steady_clock::time_point lastUsed;
     };
     QSet<quint32> m_pressedKeys;
+    QMutex m_pressedKeysMutex;
     QHash<uint32_t, CursorCacheEntry> m_cursorCache;
     CursorCacheEntry* m_lastUsedCursor{nullptr};
     double m_scrollAccumulatorX{0.0};

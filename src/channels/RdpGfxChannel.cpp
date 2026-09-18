@@ -298,12 +298,30 @@ void RdpGfxChannel::stopSubmissionThread()
 bool RdpGfxChannel::hasInFlightCapacity()
 {
     std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    if (m_pendingFrames.size() < 6) {
+    // Dynamically adjust in-flight frame limit based on network RTT:
+    // Low latency LAN (< 20ms): limit to 4 frames for minimal buffering and ultra-low input-to-display latency.
+    // Higher latency WAN/Wi-Fi (40-100ms): scale up to 8-10 frames so 60 FPS bandwidth-delay product is saturated without stalls.
+    int64_t rtt = m_lastRttMs.load();
+    size_t maxInFlight = 6;
+    if (rtt > 0) {
+        if (rtt <= 20) {
+            maxInFlight = 4;
+        } else if (rtt <= 50) {
+            maxInFlight = 6;
+        } else if (rtt <= 90) {
+            maxInFlight = 8;
+        } else {
+            maxInFlight = 10;
+        }
+    }
+
+    if (m_pendingFrames.size() < maxInFlight) {
         return true;
     }
     const auto now = std::chrono::steady_clock::now();
+    int64_t timeoutMs = std::max<int64_t>(80, rtt * 2);
     if (!m_pendingFrameTimestamps.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > 80) {
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > timeoutMs) {
         m_pendingFrames.clear();
         m_pendingFrameTimestamps.clear();
         return true;
@@ -324,8 +342,8 @@ void RdpGfxChannel::submitFrame(const QueuedVideoFrame &frame)
     }
     freerdp_peer* peer = rdpctx->peer;
     rdpSettings* settings = peer->context->settings;
-    UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
-    UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+    UINT32 width = (m_surfaceWidth > 0) ? m_surfaceWidth : freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
+    UINT32 height = (m_surfaceHeight > 0) ? m_surfaceHeight : freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
 
     const auto now = QDateTime::currentDateTimeUtc().time();
     UINT32 timestamp = (now.hour() << 22) | (now.minute() << 16) | (now.second() << 10) | now.msec();
