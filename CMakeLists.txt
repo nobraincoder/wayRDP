@@ -63,8 +63,11 @@ unset(CMAKE_REQUIRED_LIBRARIES)
 set(SOURCES
     src/core/main.cpp
     src/core/RdpServer.cpp
+    src/core/AuthManager.cpp
+    src/core/RdpCursorManager.cpp
     src/core/SystemInputSettings.cpp
     src/channels/RdpGfxChannel.cpp
+    src/channels/RdpCliprdrChannel.cpp
     src/display/IVirtualDisplayBackend.cpp
     src/display/KWinVirtualDisplay.cpp
     src/input/EiConnection.cpp

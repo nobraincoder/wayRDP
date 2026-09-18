@@ -176,18 +176,19 @@ void EiConnection::sendPointerMotionAbsolute(double x, double y, const QSize &st
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
 }
 
-void EiConnection::sendPointerButton(int button, uint state)
+bool EiConnection::sendPointerButton(int button, uint state)
 {
-    if (!m_ei) return;
+    if (!m_ei) return false;
 
     EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
     if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_BUTTON)) {
         pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_BUTTON);
     }
-    if (!pointerDevice) return;
+    if (!pointerDevice) return false;
 
     ei_device_button_button(pointerDevice->device(), static_cast<uint32_t>(button), state == 1);
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
+    return true;
 }
 
 void EiConnection::sendPointerAxis(double dx, double dy)

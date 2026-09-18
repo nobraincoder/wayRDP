@@ -886,9 +886,12 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
     if (m_sessionPath.isEmpty() || !m_displayActive)
         return;
 
+    bool sentViaEi = false;
     if (m_eiConnection && m_eiConnection->hasPointer()) {
-        m_eiConnection->sendPointerButton(button, state);
-    } else {
+        sentViaEi = m_eiConnection->sendPointerButton(button, state);
+    }
+
+    if (!sentViaEi) {
         QDBusMessage message = QDBusMessage::createMethodCall(
             "org.freedesktop.portal.Desktop",
             "/org/freedesktop/portal/desktop",

@@ -6,29 +6,24 @@
 #include <QImage>
 #include <QPoint>
 #include <QMutex>
+#include <QSet>
+#include <QTimer>
+#include <QStringList>
+#include <atomic>
+#include <chrono>
+
 #include <freerdp/freerdp.h>
 #include <freerdp/listener.h>
-#include <freerdp/server/rdpgfx.h>
-#include <freerdp/server/cliprdr.h>
 #include <freerdp/server/rdpsnd.h>
 #include <freerdp/server/disp.h>
 #include <freerdp/input.h>
-#include <freerdp/pointer.h>
 #include <freerdp/update.h>
-#include <atomic>
-#include <chrono>
-#include <deque>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
-#include <QHash>
-#include <QSet>
-#include <QTimer>
-#include <QFile>
-#include <QStringList>
-#include <winpr/shell.h>
+
 #include "core/SystemInputSettings.h"
+#include "core/AuthManager.h"
+#include "core/RdpCursorManager.h"
 #include "channels/RdpGfxChannel.h"
+#include "channels/RdpCliprdrChannel.h"
 
 struct MyPeerContext {
     rdpContext common;
@@ -48,7 +43,7 @@ class RdpServer : public QObject
     Q_OBJECT
 public:
     explicit RdpServer(QObject *parent = nullptr);
-    ~RdpServer();
+    ~RdpServer() override;
 
     bool start(int port = 3389);
     void stop();
@@ -61,7 +56,6 @@ public slots:
     void onHostClipboardChanged(const QString &text);
     void onHostClipboardFilesChanged(const QStringList &filePaths);
     void checkNetworkAdaptation();
-    void onKlipperClipboardUpdated();
     void updateCursorShape(const QImage &image, const QPoint &hotspot);
     void resetGraphicsSurface(UINT32 width, UINT32 height);
 
@@ -105,48 +99,33 @@ private:
 
     static BOOL peerSuppressOutput(rdpContext* context, BYTE allow, const RECTANGLE_16* rect);
 
-    static UINT cliprdr_client_capabilities(CliprdrServerContext* context, const CLIPRDR_CAPABILITIES* capabilities);
-    static UINT cliprdr_client_format_list(CliprdrServerContext* context, const CLIPRDR_FORMAT_LIST* formatList);
-    static UINT cliprdr_client_format_list_response(CliprdrServerContext* context, const CLIPRDR_FORMAT_LIST_RESPONSE* formatListResponse);
-    static UINT cliprdr_client_format_data_request(CliprdrServerContext* context, const CLIPRDR_FORMAT_DATA_REQUEST* formatDataRequest);
-    static UINT cliprdr_client_format_data_response(CliprdrServerContext* context, const CLIPRDR_FORMAT_DATA_RESPONSE* formatDataResponse);
-    static UINT cliprdr_client_file_contents_request(CliprdrServerContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest);
-    static UINT cliprdr_client_file_contents_response(CliprdrServerContext* context, const CLIPRDR_FILE_CONTENTS_RESPONSE* fileContentsResponse);
-    static UINT cliprdr_client_lock_clipboard_data(CliprdrServerContext* context, const CLIPRDR_LOCK_CLIPBOARD_DATA* lockClipboardData);
-    static UINT cliprdr_client_unlock_clipboard_data(CliprdrServerContext* context, const CLIPRDR_UNLOCK_CLIPBOARD_DATA* unlockClipboardData);
-
     static void rdpsnd_activated(RdpsndServerContext* context);
     static UINT rdpsnd_confirm_block(RdpsndServerContext* context, BYTE confirmBlockNum, UINT16 wtimestamp);
 
-    void generateCertificate();
-    void setupSamDatabase();
-    void cleanupSamDatabase();
-
     QString m_samFilePath;
-    freerdp_listener* m_listener;
-    HANDLE m_listenerThread;
-    bool m_running;
+    freerdp_listener* m_listener{nullptr};
+    HANDLE m_listenerThread{nullptr};
+    bool m_running{false};
 
 public:
     RdpGfxChannel m_gfxChannel;
-    CliprdrServerContext* m_cliprdrContext;
-    RdpsndServerContext* m_rdpsndContext;
-    freerdp_peer* m_activePeer;
+    RdpCliprdrChannel m_cliprdrChannel;
+    RdpCursorManager m_cursorManager;
+
+    RdpsndServerContext* m_rdpsndContext{nullptr};
+    freerdp_peer* m_activePeer{nullptr};
     QMutex m_peerMutex;
     QMutex m_audioMutex;
-    QMutex m_cliprdrMutex;
-    UINT16 m_audioTimestamp;
+    UINT16 m_audioTimestamp{0};
     std::atomic<bool> m_audioReady{false};
     std::atomic<bool> m_clientConfirmsBlocks{false};
     std::atomic<uint8_t> m_lastConfirmedBlock{0};
     int16_t m_lastLeftSample{0};
     int16_t m_lastRightSample{0};
     bool m_audioDroppedPrevious{false};
-    std::atomic<bool> m_cliprdrReady{false};
     std::atomic<uint32_t> m_audioSampleRate{48000};
     std::atomic<uint64_t> m_audioFramesSent{0};
     AUDIO_FORMAT m_pcmFormats[2];
-    std::atomic<bool> m_cursorHidden{false};
     std::atomic<double> m_clientScale{1.0};
     std::atomic<uint32_t> m_lastSentFrameId{0};
     std::atomic<uint32_t> m_lastAckedFrameId{0};
@@ -156,38 +135,8 @@ public:
     std::atomic<int> m_currentQuality{95};
     std::atomic<int64_t> m_smoothedRttMs{0};
 
-    UINT32 m_formatFileGroupDescriptorW{0xC001};
-    UINT32 m_formatFileContents{0xC002};
-    UINT32 m_clientFileGroupDescriptorFormatId{0};
-    QStringList m_outgoingFiles;
-    QByteArray m_outgoingFgdData;
-
-    struct IncomingFileTransfer {
-        QString fileName;
-        QString localPath;
-        uint64_t fileSize{0};
-        uint64_t requestedBytes{0};
-        uint64_t receivedBytes{0};
-        QFile* localFile{nullptr};
-        QHash<uint32_t, uint64_t> inFlightRequests;
-    };
-    QList<IncomingFileTransfer> m_incomingFiles;
-    uint32_t m_currentIncomingFileIndex{0};
-    uint32_t m_fileStreamId{0};
-    QStringList m_completedIncomingFilePaths;
-    void startNextIncomingFile(CliprdrServerContext* context);
-
-    QString m_lastHostClipboardText;
-    struct CursorCacheEntry {
-        uint32_t cacheId{0};
-        QPoint hotspot;
-        QImage image;
-        std::chrono::steady_clock::time_point lastUsed;
-    };
     QSet<quint32> m_pressedKeys;
     QMutex m_pressedKeysMutex;
-    QHash<uint32_t, CursorCacheEntry> m_cursorCache;
-    CursorCacheEntry* m_lastUsedCursor{nullptr};
     double m_scrollAccumulatorX{0.0};
     double m_scrollAccumulatorY{0.0};
     SystemInputSettings m_inputSettings;
