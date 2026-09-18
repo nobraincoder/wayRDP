@@ -2234,20 +2234,24 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),
     // SendSamples2 transmits raw PCM audio directly via atomic SNDC_WAVE2 PDUs without
     // going through FreeRDP's lossy DSP resampler or splitting/zeroing packet headers.
-    // Setting timestamp and dwAudioTimeStamp to 0 disables client-side AV rate-stretching
-    // per MS-RDPEA 2.2.3.10 and forces immediate 1.0x native real-time playback.
+    // Per MS-RDPEA 2.2.3.10, wTimeStamp and dwAudioTimeStamp must be set to the monotonic
+    // millisecond system clock from system boot so client jitter buffers keep perfect A/V sync.
+    const UINT64 nowMs = GetTickCount64();
+    const UINT16 timestamp16 = static_cast<UINT16>(nowMs % 65536);
+    const UINT32 timestamp32 = static_cast<UINT32>(nowMs & 0xFFFFFFFF);
+
     if (m_rdpsndContext->clientVersion >= 8 && m_rdpsndContext->SendSamples2) {
         UINT rc = m_rdpsndContext->SendSamples2(m_rdpsndContext,
                                                m_rdpsndContext->selected_client_format,
                                                data.constData(),
                                                data.size(),
-                                               0,
-                                               0);
+                                               timestamp16,
+                                               timestamp32);
         if (rc == CHANNEL_RC_OK) {
             return;
         }
     }
 
-    m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, 0);
+    m_rdpsndContext->SendSamples(m_rdpsndContext, data.constData(), nframes, timestamp16);
 }
 
