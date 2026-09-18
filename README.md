@@ -24,6 +24,10 @@ While official KDE KRdp provides screen-sharing and mirroring of physical monito
   - Supports true file copying and pasting between client and host alongside text clipboard:
     - **Client to Host:** Copy files on Windows/macOS and paste directly into KDE Dolphin via `KSystemClipboard`.
     - **Host to Client:** Copy files in Dolphin and paste directly into Windows Explorer or macOS Finder via `FileGroupDescriptorW` / `FileContents` virtual channels.
+- **Real-Time Desktop Audio Redirection (`[MS-RDPSND]`):**
+  - Streams low-latency host audio (48kHz, 16-bit stereo) directly to RDP clients via atomic `SendSamples2` (SNDC_WAVE2) packets.
+  - Automatically isolates playback into a virtual null-sink (`format=s16le`) so remote audio streams seamlessly without local monitor interference or resampling dithering artifacts.
+  - Features bounded jitter flow control and Packet Loss Concealment (PLC) for click-free listening.
 - **Zero-Prompt Remote Activation:**
   - Pre-seeds `org.freedesktop.impl.portal.PermissionStore` at startup, allowing headless connections without requiring physical confirmation at the host screen.
 - **Session Auto-Lock on Disconnect:**
@@ -68,7 +72,7 @@ sudo dnf install \
     qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kguiaddons-devel \
     kpipewire-devel freerdp-devel libwinpr-devel libxkbcommon-devel \
     libei-devel pam-devel openssl-devel openssl pulseaudio-libs-devel \
-    libkscreen-devel libkscreen libva-devel
+    libkscreen-devel libkscreen libva-devel pulseaudio-utils
 ```
 
 #### 3. Debian 13 (Trixie) / Ubuntu 24.10+ (Verified Compilation)
@@ -78,7 +82,7 @@ sudo apt-get install \
     qt6-base-dev qt6-multimedia-dev libkf6guiaddons-dev \
     libkpipewire-dev freerdp3-dev libwinpr3-dev \
     libxkbcommon-dev libei-dev libpam0g-dev \
-    libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all
+    libssl-dev openssl libpulse-dev libkscreen-dev libkscreen-bin va-driver-all pulseaudio-utils
 ```
 
 #### 4. openSUSE Tumbleweed & Slowroll (Package Reference)
@@ -88,7 +92,7 @@ sudo zypper install \
     qt6-base-devel qt6-multimedia-devel kf6-kguiaddons-devel \
     libkpipewire-devel freerdp-devel libwinpr3-devel \
     libxkbcommon-devel libei-devel pam-devel libopenssl-devel \
-    openssl libpulse-devel libkscreen6-devel libkscreen6-plugin
+    openssl libpulse-devel libkscreen6-devel libkscreen6-plugin pulseaudio-utils
 ```
 
 </details>
@@ -202,7 +206,24 @@ RDP_IDLE_TIMEOUT_SEC=30
 # Locks the KDE desktop session via KScreenLocker / loginctl when the RDP client disconnects.
 RDP_LOCK_ON_DISCONNECT=1
 
+# --- Desktop Audio Redirection ([MS-RDPSND]) ---
+
+# Enable/disable audio streaming to client (1 = enabled, 0 = disabled, default: 1)
+RDP_AUDIO=1
+
+# Audio Volume Headroom Scaling (default: 1.0; e.g. 0.70 prevents clipping on high dynamic range audio)
+RDP_AUDIO_VOLUME=1.0
+
+# Virtual Null-Sink Isolation (default: 1)
+# Routes desktop audio to an isolated null-sink (format=s16le, 48kHz stereo) to prevent monitor conflicts
+RDP_AUDIO_VIRTUAL_SINK=1
+
 # --- Optional Input Overrides (Takes precedence over KDE System Settings) ---
+
+# Windows Client Scroll Multiplier:
+# Normalizes Windows mstsc 120-unit wheel detents so scroll speed matches macOS and native Wayland.
+# Default: 0.5 (halving Windows scroll speed). Set to 0.4 for slower or 0.7 for faster.
+RDP_WINDOWS_SCROLL_SCALE=0.5
 
 # Explicitly override touchpad natural scrolling (1 = natural/inverted, 0 = traditional)
 # RDP_NATURAL_SCROLL=1
