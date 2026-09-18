@@ -2,6 +2,7 @@
 
 #include <QDebug>
 #include <QScopeGuard>
+#include <algorithm>
 #include <libei.h>
 #include <linux/input.h>
 #include <unistd.h>
@@ -161,6 +162,12 @@ void EiConnection::sendPointerMotionAbsolute(double x, double y, const QSize &st
         double normY = y / streamSize.height();
         devicePosition = QPointF(region.rect.x() + normX * region.rect.width(),
                                  region.rect.y() + normY * region.rect.height());
+        // Clamp to region bounds: libei silently discards events where
+        // coordinates fall on or beyond the region edge.
+        double maxX = region.rect.x() + region.rect.width() - 0.5;
+        double maxY = region.rect.y() + region.rect.height() - 0.5;
+        devicePosition.setX(std::clamp(devicePosition.x(), region.rect.x(), maxX));
+        devicePosition.setY(std::clamp(devicePosition.y(), region.rect.y(), maxY));
     } else {
         devicePosition = QPointF(x, y);
     }

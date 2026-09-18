@@ -341,10 +341,8 @@ void RdpServer::stop()
     }
     {
         QMutexLocker locker(&m_audioMutex);
-        if (m_rdpsndContext) {
-            rdpsnd_server_context_free(m_rdpsndContext);
-            m_rdpsndContext = nullptr;
-        }
+        // FreeRDP 3 auto-frees rdpsnd context on VCM close; do not double-free.
+        m_rdpsndContext = nullptr;
         m_audioReady = false;
     }
     
@@ -798,10 +796,11 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         server->m_currentQuality = 95;
         {
             QMutexLocker locker(&server->m_audioMutex);
-            if (server->m_rdpsndContext) {
-                rdpsnd_server_context_free(server->m_rdpsndContext);
-                server->m_rdpsndContext = nullptr;
-            }
+            // FreeRDP 3 automatically frees the rdpsnd context when the
+            // virtual channel manager (VCM) is closed. Calling
+            // rdpsnd_server_context_free() here causes a double-free
+            // (SIGABRT "double free or corruption (out)").
+            server->m_rdpsndContext = nullptr;
             server->m_audioReady = false;
         }
         server->m_cursorHidden = false;
