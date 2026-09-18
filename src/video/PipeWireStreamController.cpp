@@ -179,7 +179,16 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    m_stream->setMaxPendingFrames(100);
+    // Bounded pending frames buffer: 8 frames (~133ms at 60 FPS) prevents hoarding stale frames
+    // during throttled idle states and eliminates "Filter queue is full" drop storms.
+    int maxPending = 8;
+    bool okPending = false;
+    int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
+    if (okPending && envPending >= 3) {
+        maxPending = envPending;
+    }
+    m_stream->setMaxPendingFrames(maxPending);
+    qInfo() << "PipeWireStreamController: Configured max pending encoder frames:" << maxPending;
 
     const auto suggested = m_stream->suggestedEncoders();
     qInfo() << "PipeWireStreamController: Video encoder configured with quality:" << m_quality << "% | Suggested encoders:" << suggested;

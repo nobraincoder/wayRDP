@@ -55,6 +55,7 @@ KWinVirtualDisplay::KWinVirtualDisplay(QObject *parent)
 
 KWinVirtualDisplay::~KWinVirtualDisplay()
 {
+    cancelPointerNudges();
     destroyDisplay();
 }
 
@@ -810,10 +811,29 @@ void KWinVirtualDisplay::onClientConnected(const QSize &resolution, double scale
 void KWinVirtualDisplay::onClientDisconnected()
 {
     qInfo() << "KWinVirtualDisplay: RDP Client disconnected";
+    cancelPointerNudges();
     m_eiConnection.reset();
     m_accumulatedX = 0.0;
     m_accumulatedY = 0.0;
     destroyDisplay();
+}
+
+void KWinVirtualDisplay::setScreenLocked(bool locked)
+{
+    m_isScreenLocked = locked;
+    cancelPointerNudges();
+    qInfo() << "KWinVirtualDisplay: Screen lock state set to:" << (locked ? "LOCKED" : "UNLOCKED");
+}
+
+void KWinVirtualDisplay::cancelPointerNudges()
+{
+    for (QTimer *timer : m_nudgeTimers) {
+        if (timer) {
+            timer->stop();
+            timer->deleteLater();
+        }
+    }
+    m_nudgeTimers.clear();
 }
 
 void KWinVirtualDisplay::changeResolution(const QSize &newSize, double scale)
@@ -914,24 +934,32 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
 
     // When releasing a mouse button (e.g. desktop area selection rubberband, dragging window/files,
     // closing dropdown menus), Plasma/apps tear down the overlay/selection box with an OpacityAnimator.
-    // If the user stops moving the mouse immediately, KWin Wayland ignores zero-delta motion (m_pos == pos).
-    // By nudging the pointer position by 1 pixel and back across the 280ms animation lifecycle,
-    // KWin's PointerInputRedirection processes motion, updates pointer focus, and forces the compositor
-    // to render and transmit the final clean frame immediately.
-    if (state == 0) {
+    // Guard against running pointer nudges when the screen is locked: nudging pointer position while
+    // kscreenlocker is active or fading re-triggers compositor updates on the dying lockscreen surface,
+    // causing obsolete lockscreen frames to flash over the unlocked desktop!
+    if (state == 0 && !m_isScreenLocked) {
+        cancelPointerNudges();
         double deltaX = (m_lastPointerX + 1.0 < m_requestedSize.width()) ? 1.0 : -1.0;
-        QTimer::singleShot(60, this, [this, deltaX]() {
+
+        auto *t1 = new QTimer(this);
+        t1->setSingleShot(true);
+        connect(t1, &QTimer::timeout, this, [this, deltaX, t1]() {
             sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
+            m_nudgeTimers.removeOne(t1);
+            t1->deleteLater();
         });
-        QTimer::singleShot(120, this, [this]() {
+        m_nudgeTimers.append(t1);
+        t1->start(40);
+
+        auto *t2 = new QTimer(this);
+        t2->setSingleShot(true);
+        connect(t2, &QTimer::timeout, this, [this, t2]() {
             sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
+            m_nudgeTimers.removeOne(t2);
+            t2->deleteLater();
         });
-        QTimer::singleShot(200, this, [this, deltaX]() {
-            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
-        });
-        QTimer::singleShot(280, this, [this]() {
-            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
-        });
+        m_nudgeTimers.append(t2);
+        t2->start(90);
     }
 }
 

@@ -21,6 +21,7 @@
 #include "video/PipeWireStreamController.h"
 #include "audio/QtAudioController.h"
 #include "session/SessionLifecycleController.h"
+#include "video/CodecHooks.h"
 
 static int sigFd[2];
 
@@ -156,8 +157,28 @@ int main(int argc, char *argv[])
     // Session lifecycle (Sleep inhibit during active RDP session, optional auto-lock on disconnect)
     QObject::connect(&server, &RdpServer::clientConnected,
                      &lifecycleController, &SessionLifecycleController::onClientConnected);
+    QObject::connect(&server, &RdpServer::clientConnected,
+                     [&lifecycleController, &virtualDisplay]() {
+                         virtualDisplay->setScreenLocked(lifecycleController.isScreenLocked());
+                     });
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      &lifecycleController, &SessionLifecycleController::onClientDisconnected);
+
+    // Dynamic lock/unlock transitions (Purge stale queue and request fresh IDR keyframe to prevent flash)
+    QObject::connect(&lifecycleController, &SessionLifecycleController::sessionUnlocked,
+                     [&virtualDisplay, &streamController, &server]() {
+                         qInfo() << "Main: Session unlocked! Purging stale frames and requesting keyframe...";
+                         virtualDisplay->setScreenLocked(false);
+                         streamController.onClientActivity();
+                         CodecHooks_requestKeyframe();
+                         server.purgeStaleFrames();
+                     });
+    QObject::connect(&lifecycleController, &SessionLifecycleController::sessionLocked,
+                     [&virtualDisplay, &server]() {
+                         qInfo() << "Main: Session locked! Updating display lock status and purging frames...";
+                         virtualDisplay->setScreenLocked(true);
+                         server.purgeStaleFrames();
+                     });
 
     // Idle power saver (Dynamic FPS throttling when no input activity from client)
     QObject::connect(&server, &RdpServer::clientActivity,

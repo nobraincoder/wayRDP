@@ -58,6 +58,7 @@ public slots:
     void checkNetworkAdaptation();
     void updateCursorShape(const QImage &image, const QPoint &hotspot);
     void resetGraphicsSurface(UINT32 width, UINT32 height);
+    void purgeStaleFrames();
 
 signals:
     void clientConnected(const QSize &resolution, double scale);

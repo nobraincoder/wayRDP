@@ -35,6 +35,7 @@ public slots:
     void onClientConnected(const QSize &resolution, double scale) override;
     void onClientDisconnected() override;
     void changeResolution(const QSize &newSize, double scale = 1.0) override;
+    void setScreenLocked(bool locked) override;
 
     void sendPointerMotionAbsolute(double x, double y) override;
     void sendPointerButton(int button, uint state) override;
@@ -54,6 +55,7 @@ private:
     void openPipeWireRemote();
     void connectToEis();
     void doSendAxis(double dx, double dy);
+    void cancelPointerNudges();
 
     QString m_sessionPath;
     QDBusObjectPath m_currentRequestPath;
@@ -76,6 +78,10 @@ private:
     double m_accumulatedX{0.0};
     double m_accumulatedY{0.0};
     std::chrono::steady_clock::time_point m_lastAxisTime;
+
+    // Screen lock state and nudge timer management
+    bool m_isScreenLocked{false};
+    QList<QTimer*> m_nudgeTimers;
 
     // Last known pointer position for post-action repaint nudges
     double m_lastPointerX{0.0};

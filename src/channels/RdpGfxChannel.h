@@ -34,6 +34,7 @@ public:
     void resetSurface(UINT32 width, UINT32 height);
     void sendFrame(const QByteArray &data, bool isKeyFrame);
     void setOutputSuppressed(bool suppressed);
+    void purgeStaleFrames();
 
     bool isReady() const { return m_gfxReady.load(); }
     bool isOpened() const { return m_gfxOpened.load(); }

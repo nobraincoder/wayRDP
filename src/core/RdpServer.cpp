@@ -970,6 +970,11 @@ void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
     m_gfxChannel.resetSurface(width, height);
 }
 
+void RdpServer::purgeStaleFrames()
+{
+    m_gfxChannel.purgeStaleFrames();
+}
+
 BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
 {
     Q_UNUSED(flags);

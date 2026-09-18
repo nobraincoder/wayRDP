@@ -125,6 +125,22 @@ void RdpGfxChannel::setOutputSuppressed(bool suppressed)
     }
 }
 
+void RdpGfxChannel::purgeStaleFrames()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_frameQueueMutex);
+        m_frameQueue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
+        m_pendingFrames.clear();
+        m_pendingFrameTimestamps.clear();
+    }
+    m_waitingForKeyFrame = true;
+    m_frameQueueCond.notify_all();
+    qInfo() << "RdpGfxChannel: Purged stale frame queue, waiting for clean IDR keyframe";
+}
+
 void RdpGfxChannel::resetSurface(UINT32 width, UINT32 height)
 {
     QMutexLocker locker(&m_mutex);
