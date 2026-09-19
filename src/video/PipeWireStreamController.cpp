@@ -197,10 +197,10 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    // Bounded pending frames buffer: 16 frames (~266ms at 60 FPS) ensures sufficient buffer
-    // headroom for the hardware VA-API encoder pipeline during fast pointer/selection box updates,
-    // eliminating "Encode queue is full, discarding filtered frame" drops that cause selection ghosting.
-    int maxPending = 16;
+    // Bounded pending frames buffer: 32 frames (~533ms at 60 FPS) ensures ample buffer
+    // headroom for the hardware VA-API encoder pipeline during fast pointer and window dragging,
+    // eliminating "Filter queue is full" drops while avoiding excessive queue latency.
+    int maxPending = 32;
     bool okPending = false;
     int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
     if (okPending && envPending >= 3) {
@@ -286,11 +286,25 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         mismatchDropCount = 0;
     }
 
-    // Active screen updates (video, browsing, window motions) count as screen activity to prevent false idle throttling
+    // Active screen updates (video, browsing, window motions) count as screen activity to prevent false idle throttling.
+    // When throttled to 5 FPS, PipeWire may flush 1 residual frame during parameter renegotiation.
+    // Require rapid consecutive frames (< 150ms interval) to distinguish genuine screen animations
+    // from single residual renegotiation frames, preventing idle flapping.
+    static int s_consecutiveActive = 0;
+    static qint64 s_lastPacketTimeMs = 0;
+    qint64 nowMs = m_fpsTimer.elapsed();
+    if (s_lastPacketTimeMs > 0 && (nowMs - s_lastPacketTimeMs) <= 150) {
+        s_consecutiveActive++;
+    } else {
+        s_consecutiveActive = 0;
+    }
+    s_lastPacketTimeMs = nowMs;
+
     m_lastActivityTimer.restart();
-    if (m_isIdle) {
+    if (m_isIdle && s_consecutiveActive >= 2) {
         m_isIdle = false;
-        qInfo() << "PipeWireStreamController: Screen activity detected, restoring framerate to" << m_activeFramerate << "FPS";
+        s_consecutiveActive = 0;
+        qInfo() << "PipeWireStreamController: Screen animation detected, restoring framerate to" << m_activeFramerate << "FPS";
         if (m_stream) {
             m_stream->setMaxFramerate(m_activeFramerate);
         }

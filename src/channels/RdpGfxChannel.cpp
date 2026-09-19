@@ -234,7 +234,7 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
 
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
-        if (m_frameQueue.size() > 30) {
+        if (m_frameQueue.size() > 60) {
             // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
             // In H.264, dropping a delta frame breaks the reference chain in mstsc,
             // permanently freezing the client video stream until an IDR frame arrives.
@@ -269,7 +269,7 @@ void RdpGfxChannel::startSubmissionThread()
                 }
 
                 if (!hasInFlightCapacity()) {
-                    m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(10), [this]() {
+                    m_frameQueueCond.wait_for(lock, std::chrono::milliseconds(5), [this]() {
                         return !m_submissionRunning || hasInFlightCapacity();
                     });
                     if (!m_submissionRunning) {
@@ -316,28 +316,23 @@ void RdpGfxChannel::stopSubmissionThread()
 bool RdpGfxChannel::hasInFlightCapacity()
 {
     std::lock_guard<std::mutex> lock(m_pendingFramesMutex);
-    // Dynamically adjust in-flight frame limit based on network RTT:
-    // Low latency LAN (< 20ms): limit to 4 frames for minimal buffering and ultra-low input-to-display latency.
-    // Higher latency WAN/Wi-Fi (40-100ms): scale up to 8-10 frames so 60 FPS bandwidth-delay product is saturated without stalls.
+    // To sustain true 60 FPS streaming, the in-flight frame window must accommodate
+    // client decode, presentation, and ACK batching latency (typically 40-80ms on macOS).
+    // Allowing 16-24 frames (266-400ms at 60 FPS) ensures the submission thread never
+    // stalls or artificially caps throughput to ~30 FPS on high-performance clients.
     int64_t rtt = m_lastRttMs.load();
-    size_t maxInFlight = 6;
-    if (rtt > 0) {
-        if (rtt <= 20) {
-            maxInFlight = 4;
-        } else if (rtt <= 50) {
-            maxInFlight = 6;
-        } else if (rtt <= 90) {
-            maxInFlight = 8;
-        } else {
-            maxInFlight = 10;
-        }
+    size_t maxInFlight = 16;
+    if (rtt > 50) {
+        maxInFlight = 20;
+    } else if (rtt > 100) {
+        maxInFlight = 24;
     }
 
     if (m_pendingFrames.size() < maxInFlight) {
         return true;
     }
     const auto now = std::chrono::steady_clock::now();
-    int64_t timeoutMs = std::max<int64_t>(80, rtt * 2);
+    int64_t timeoutMs = std::max<int64_t>(120, rtt * 2);
     if (!m_pendingFrameTimestamps.empty() &&
         std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pendingFrameTimestamps.front().second).count() > timeoutMs) {
         m_pendingFrames.clear();
