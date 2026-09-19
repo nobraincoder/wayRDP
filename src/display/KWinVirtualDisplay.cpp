@@ -97,7 +97,7 @@ bool KWinVirtualDisplay::createDisplay(const QString& name, const QSize& size, d
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onCreateSessionResponse(uint,QVariantMap))
+        SLOT(onCreateSessionResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -113,7 +113,7 @@ bool KWinVirtualDisplay::createDisplay(const QString& name, const QSize& size, d
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onCreateSessionResponse(uint,QVariantMap))
+                SLOT(onCreateSessionResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -124,15 +124,21 @@ bool KWinVirtualDisplay::createDisplay(const QString& name, const QSize& size, d
     return true;
 }
 
-void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched CreateSession response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onCreateSessionResponse(uint,QVariantMap))
+        SLOT(onCreateSessionResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -184,7 +190,7 @@ void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &r
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectDevicesResponse(uint,QVariantMap))
+        SLOT(onSelectDevicesResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -200,7 +206,7 @@ void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &r
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onSelectDevicesResponse(uint,QVariantMap))
+                SLOT(onSelectDevicesResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -208,16 +214,22 @@ void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &r
     });
 }
 
-void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
     Q_UNUSED(results);
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched SelectDevices response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectDevicesResponse(uint,QVariantMap))
+        SLOT(onSelectDevicesResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -252,7 +264,7 @@ void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &r
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectSourcesResponse(uint,QVariantMap))
+        SLOT(onSelectSourcesResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -268,7 +280,7 @@ void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &r
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onSelectSourcesResponse(uint,QVariantMap))
+                SLOT(onSelectSourcesResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -276,16 +288,22 @@ void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &r
     });
 }
 
-void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
     Q_UNUSED(results);
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched SelectSources response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectSourcesResponse(uint,QVariantMap))
+        SLOT(onSelectSourcesResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -316,7 +334,7 @@ void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &r
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onStartResponse(uint,QVariantMap))
+        SLOT(onStartResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -332,7 +350,7 @@ void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &r
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onStartResponse(uint,QVariantMap))
+                SLOT(onStartResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -340,15 +358,21 @@ void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &r
     });
 }
 
-void KWinVirtualDisplay::onStartResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onStartResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched Start response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onStartResponse(uint,QVariantMap))
+        SLOT(onStartResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -396,7 +420,12 @@ void KWinVirtualDisplay::onStartResponse(uint code, const QVariantMap &results)
     connectToEis();
 
     // Wait a brief moment for KWin to register the virtual output, then configure resolution and start stream
-    QTimer::singleShot(300, this, &KWinVirtualDisplay::setupVirtualDisplayResolution);
+    const uint64_t initialGen = ++m_resolutionGeneration;
+    QTimer::singleShot(300, this, [this, initialGen]() {
+        if (initialGen == m_resolutionGeneration) {
+            setupVirtualDisplayResolution();
+        }
+    });
 }
 
 void KWinVirtualDisplay::connectToEis()
@@ -431,6 +460,10 @@ void KWinVirtualDisplay::connectToEis()
 
         int fd = unixFd.fileDescriptor();
         int dupedFd = dup(fd);
+        if (dupedFd < 0) {
+            qWarning() << "KWinVirtualDisplay: dup() failed for EIS FD:" << strerror(errno) << "- using DBus input fallback.";
+            return;
+        }
         qInfo() << "KWinVirtualDisplay: Received EIS FD:" << fd << "(duped:" << dupedFd << "), initializing low-latency EiConnection";
 
         m_eiConnection = std::make_unique<EiConnection>(dupedFd, this);
@@ -476,6 +509,10 @@ void KWinVirtualDisplay::openPipeWireRemote()
 
         int fd = unixFd.fileDescriptor();
         int dupedFd = dup(fd);
+        if (dupedFd < 0) {
+            qWarning() << "KWinVirtualDisplay: dup() failed for PipeWire Remote FD:" << strerror(errno);
+            return;
+        }
         qInfo() << "Successfully retrieved duplicated PipeWire Remote FD:" << dupedFd << "for stream node ID:" << m_streamNodeId;
 
         m_streamOpened = true;
@@ -515,15 +552,21 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
 {
     if (!m_displayActive) return;
 
-    qInfo() << "Configuring virtual display resolution to" << m_requestedSize << "and scale" << m_requestedScale;
+    const uint64_t generation = m_resolutionGeneration;
+    qInfo() << "Configuring virtual display resolution to" << m_requestedSize << "and scale" << m_requestedScale
+            << "(generation:" << generation << ")";
 
     QProcess* proc = new QProcess(this);
     QProcessEnvironment env = getKScreenEnvironment();
     proc->setProcessEnvironment(env);
     proc->start("kscreen-doctor", QStringList() << "-j");
 
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, proc, env](int exitCode, QProcess::ExitStatus exitStatus) {
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, proc, env, generation](int exitCode, QProcess::ExitStatus exitStatus) {
         proc->deleteLater();
+        if (generation != m_resolutionGeneration) {
+            qInfo() << "Discarding stale resolution query (generation mismatch:" << generation << "vs current:" << m_resolutionGeneration << ")";
+            return;
+        }
         if (exitCode != 0 || exitStatus != QProcess::NormalExit) {
             qWarning() << "Failed to run kscreen-doctor -j";
             openPipeWireRemote();
@@ -567,7 +610,11 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
 
         if (virtualOutputName.isEmpty() || virtualOutputId == 0) {
             qWarning() << "Virtual output not found in kscreen-doctor yet, retrying in 300ms...";
-            QTimer::singleShot(300, this, &KWinVirtualDisplay::setupVirtualDisplayResolution);
+            QTimer::singleShot(300, this, [this, generation]() {
+                if (generation == m_resolutionGeneration) {
+                    setupVirtualDisplayResolution();
+                }
+            });
             return;
         }
 
@@ -615,7 +662,12 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
             }
         }
 
-        auto applySettings = [this, virtualOutputName, virtualOutputId, currentPrimaryOutputId, env](const QString &modeIdOrName) {
+        auto applySettings = [this, virtualOutputName, virtualOutputId, currentPrimaryOutputId, env, generation](const QString &modeIdOrName) {
+            if (generation != m_resolutionGeneration) {
+                qInfo() << "Discarding stale applySettings (generation mismatch:" << generation << "vs current:" << m_resolutionGeneration << ")";
+                return;
+            }
+
             // Use integer ID for kscreen-doctor arguments so dots in names like
             // "Virtual-virtual-xdp-kde-org.kde.krdpserver" are not split as command line sub-properties!
             QString targetOutputSpec = QString::number(virtualOutputId);
@@ -637,7 +689,7 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
             QProcess* applyProc = new QProcess(this);
             applyProc->setProcessEnvironment(env);
             applyProc->start("kscreen-doctor", args);
-            connect(applyProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, applyProc, virtualOutputName, env](int exitCode, QProcess::ExitStatus) {
+            connect(applyProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, applyProc, virtualOutputName, env, generation](int exitCode, QProcess::ExitStatus) {
                 QString out = QString::fromUtf8(applyProc->readAllStandardOutput()).trimmed();
                 QString err = QString::fromUtf8(applyProc->readAllStandardError()).trimmed();
                 qInfo() << "applyProc (kscreen-doctor mode/scale) finished with code:" << exitCode;
@@ -645,13 +697,24 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                 if (!err.isEmpty()) qWarning() << "applyProc stderr:" << err;
                 applyProc->deleteLater();
 
+                if (generation != m_resolutionGeneration) {
+                    qInfo() << "Discarding stale applyProc finished (generation mismatch:" << generation << "vs current:" << m_resolutionGeneration << ")";
+                    return;
+                }
+
                 // Check actual configured mode and scale
                 QProcess* checkProc = new QProcess(this);
                 checkProc->setProcessEnvironment(env);
                 checkProc->start("kscreen-doctor", QStringList() << "-j");
-                connect(checkProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, checkProc, virtualOutputName](int, QProcess::ExitStatus) {
+                connect(checkProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, checkProc, virtualOutputName, generation](int, QProcess::ExitStatus) {
                     QJsonDocument doc = QJsonDocument::fromJson(checkProc->readAllStandardOutput());
                     checkProc->deleteLater();
+
+                    if (generation != m_resolutionGeneration) {
+                        qInfo() << "Discarding stale checkProc finished (generation mismatch:" << generation << "vs current:" << m_resolutionGeneration << ")";
+                        return;
+                    }
+
                     int configuredWidth = 0;
                     int configuredHeight = 0;
                     if (!doc.isNull()) {
@@ -676,7 +739,11 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                         m_resolutionRetryCount++;
                         qWarning() << "Virtual display mode not yet applied by KWin (currently" << configuredWidth << "x" << configuredHeight
                                    << ", requested" << m_requestedSize << "). Retrying in 250ms (attempt" << m_resolutionRetryCount << "/3)...";
-                        QTimer::singleShot(250, this, &KWinVirtualDisplay::setupVirtualDisplayResolution);
+                        QTimer::singleShot(250, this, [this, generation]() {
+                            if (generation == m_resolutionGeneration) {
+                                setupVirtualDisplayResolution();
+                            }
+                        });
                         return;
                     }
 
@@ -715,7 +782,7 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                        .arg(targetOutputSpec).arg(cvtWidth).arg(m_requestedSize.height());
             qInfo() << "Running: kscreen-doctor" << addArgs.join(" ");
             addModeProc->start("kscreen-doctor", addArgs);
-            connect(addModeProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, addModeProc, applySettings, virtualOutputName, env, cvtWidth](int exitCode, QProcess::ExitStatus) {
+            connect(addModeProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, addModeProc, applySettings, virtualOutputName, env, cvtWidth, generation](int exitCode, QProcess::ExitStatus) {
                 QString out = QString::fromUtf8(addModeProc->readAllStandardOutput()).trimmed();
                 QString err = QString::fromUtf8(addModeProc->readAllStandardError()).trimmed();
                 qInfo() << "addModeProc (kscreen-doctor addCustomMode) finished with code:" << exitCode;
@@ -723,14 +790,25 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
                 if (!err.isEmpty()) qWarning() << "addModeProc stderr:" << err;
                 addModeProc->deleteLater();
 
+                if (generation != m_resolutionGeneration) {
+                    qInfo() << "Discarding stale addModeProc finished (generation mismatch:" << generation << "vs current:" << m_resolutionGeneration << ")";
+                    return;
+                }
+
                 // Re-query modes from kscreen-doctor to find the newly assigned mode ID
                 QProcess* recheckProc = new QProcess(this);
                 recheckProc->setProcessEnvironment(env);
                 recheckProc->start("kscreen-doctor", QStringList() << "-j");
-                connect(recheckProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, recheckProc, applySettings, virtualOutputName, cvtWidth](int, QProcess::ExitStatus) {
+                connect(recheckProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, recheckProc, applySettings, virtualOutputName, cvtWidth, generation](int, QProcess::ExitStatus) {
                     QString newModeId;
                     QJsonDocument doc = QJsonDocument::fromJson(recheckProc->readAllStandardOutput());
                     recheckProc->deleteLater();
+
+                    if (generation != m_resolutionGeneration) {
+                        qInfo() << "Discarding stale recheckProc finished (generation mismatch:" << generation << "vs current:" << m_resolutionGeneration << ")";
+                        return;
+                    }
+
                     if (!doc.isNull()) {
                         for (const QJsonValue& val : doc.object().value("outputs").toArray()) {
                             QJsonObject obj = val.toObject();
@@ -767,6 +845,14 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
 void KWinVirtualDisplay::destroyDisplay()
 {
     if (!m_currentRequestPath.path().isEmpty()) {
+        QDBusMessage cancelMessage = QDBusMessage::createMethodCall(
+            "org.freedesktop.portal.Desktop",
+            m_currentRequestPath.path(),
+            "org.freedesktop.portal.Request",
+            "Close"
+        );
+        QDBusConnection::sessionBus().asyncCall(cancelMessage);
+
         QDBusConnection::sessionBus().disconnect(
             "org.freedesktop.portal.Desktop",
             QString(),
@@ -777,6 +863,11 @@ void KWinVirtualDisplay::destroyDisplay()
         );
         m_currentRequestPath = QDBusObjectPath();
     }
+
+    if (m_resolutionDebounceTimer) {
+        m_resolutionDebounceTimer->stop();
+    }
+    m_resolutionGeneration++;
 
     if (m_sessionPath.isEmpty()) {
         return;
@@ -860,15 +951,25 @@ void KWinVirtualDisplay::changeResolution(const QSize &newSize, double scale)
     if (!sizeChanged && !scaleChanged)
         return;
 
-    qInfo() << "KWinVirtualDisplay: Dynamically adjusting resolution from" << m_requestedSize << "@ scale" << m_requestedScale
-            << "to" << newSize << "@ scale" << (scale > 0.0 ? scale : m_requestedScale);
-
     m_requestedSize = newSize;
     if (scale > 0.0) {
         m_requestedScale = scale;
     }
     m_resolutionRetryCount = 0;
-    setupVirtualDisplayResolution();
+
+    const uint64_t generation = ++m_resolutionGeneration;
+    qInfo() << "KWinVirtualDisplay: Debouncing dynamic resolution adjustment from" << m_requestedSize << "@ scale" << m_requestedScale
+            << "to" << newSize << "@ scale" << (scale > 0.0 ? scale : m_requestedScale)
+            << "(generation:" << generation << ")";
+
+    if (!m_resolutionDebounceTimer) {
+        m_resolutionDebounceTimer = new QTimer(this);
+        m_resolutionDebounceTimer->setSingleShot(true);
+        connect(m_resolutionDebounceTimer, &QTimer::timeout, this, [this]() {
+            setupVirtualDisplayResolution();
+        });
+    }
+    m_resolutionDebounceTimer->start(150);
 }
 
 void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
@@ -899,12 +1000,12 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
     double logicalY = (m_requestedScale > 0.0) ? (y / m_requestedScale) : y;
 
     // Rate-limit D-Bus fallback to 120 Hz to prevent flooding the session bus with 1000 Hz mouse events
-    static auto lastDbusMotionTime = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDbusMotionTime).count() < 8) {
+    if (m_lastDbusMotionTime.time_since_epoch().count() > 0 &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastDbusMotionTime).count() < 8) {
         return;
     }
-    lastDbusMotionTime = now;
+    m_lastDbusMotionTime = now;
 
     QDBusMessage message = QDBusMessage::createMethodCall(
         "org.freedesktop.portal.Desktop",
@@ -915,6 +1016,31 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
 
     QVariantMap options;
     message.setArguments({QDBusObjectPath(m_sessionPath), options, m_streamNodeId, logicalX, logicalY});
+    QDBusConnection::sessionBus().asyncCall(message);
+}
+
+void KWinVirtualDisplay::sendPointerMotion(double dx, double dy)
+{
+    if (m_sessionPath.isEmpty() || !m_displayActive)
+        return;
+
+    cancelPointerNudges();
+
+    if (m_eiConnection && m_eiConnection->hasPointer()) {
+        m_eiConnection->sendPointerMotion(dx, dy);
+        return;
+    }
+
+    // D-Bus fallback via org.freedesktop.portal.RemoteDesktop.NotifyPointerMotion
+    QDBusMessage message = QDBusMessage::createMethodCall(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.RemoteDesktop",
+        "NotifyPointerMotion"
+    );
+
+    QVariantMap options;
+    message.setArguments({QDBusObjectPath(m_sessionPath), options, dx, dy});
     QDBusConnection::sessionBus().asyncCall(message);
 }
 

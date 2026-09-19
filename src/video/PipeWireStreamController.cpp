@@ -133,7 +133,6 @@ void PipeWireStreamController::setTargetResolution(const QSize &size)
 
 void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize &size)
 {
-
     qInfo() << "PipeWireStreamController: Starting encoding for nodeId:" << nodeId << "fd:" << fd << "size:" << size
             << "with fps:" << m_framerate << "quality:" << m_quality;
 
@@ -143,6 +142,9 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 
     m_targetResolution = size;
     m_currentStreamResolution = QSize();
+    m_consecutiveActiveFrames = 0;
+    m_lastPacketTimeMs = 0;
+    m_mismatchDropCount = 0;
 
     m_lastActivityTimer.restart();
     m_isIdle = false;
@@ -162,7 +164,6 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
     connect(m_stream, &PipeWireEncodedStream::cursorChanged, this, &PipeWireStreamController::onCursorChanged);
     connect(m_stream, &PipeWireEncodedStream::errorFound, this, &PipeWireStreamController::onErrorFound);
 
-    // Configurable codec profile: default is H264Baseline (matches KRdp default for immediate zero-latency decoding)
     QString codec = qEnvironmentVariable("RDP_CODEC").trimmed().toLower();
     if (codec == "h264_main" || codec == "main") {
         m_stream->setEncoder(PipeWireBaseEncodedStream::H264Main);
@@ -178,8 +179,6 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
         qInfo() << "PipeWireStreamController: Using H264Baseline profile for minimal latency and universal compatibility";
     }
 
-    // Encoding preference: default MUST be Speed (sets async_depth=1 in VAAPI and zerolatency in x264),
-    // otherwise async_depth > 1 leaves the final frame of closing windows queued indefinitely in the GPU!
     QString pref = qEnvironmentVariable("RDP_ENCODER_PREFERENCE").trimmed().toLower();
     if (pref == "quality") {
         m_stream->setEncodingPreference(PipeWireBaseEncodedStream::Quality);
@@ -197,9 +196,7 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    // Bounded pending frames buffer: 32 frames (~533ms at 60 FPS) ensures ample buffer
-    // headroom for the hardware VA-API encoder pipeline during fast pointer and window dragging,
-    // eliminating "Filter queue is full" drops while avoiding excessive queue latency.
+
     int maxPending = 32;
     bool okPending = false;
     int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
@@ -212,12 +209,11 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
     const auto suggested = m_stream->suggestedEncoders();
     qInfo() << "PipeWireStreamController: Video encoder configured with quality:" << m_quality << "% | Suggested encoders:" << suggested;
 
-    // Set properties
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     m_stream->setNodeId(nodeId);
 #pragma GCC diagnostic pop
-    m_stream->setFd(fd); // Ownership of fd is transferred to PipeWireEncodedStream and it will close it!
+    m_stream->setFd(fd);
 
     qInfo() << "PipeWireStreamController: Starting hardware-accelerated GPU stream...";
     m_stream->start();
@@ -229,6 +225,9 @@ void PipeWireStreamController::onStreamStopped()
         m_idleTimer->stop();
     }
     m_isIdle = false;
+    m_consecutiveActiveFrames = 0;
+    m_lastPacketTimeMs = 0;
+    m_mismatchDropCount = 0;
 
     if (m_stream) {
         qInfo() << "PipeWireStreamController: Stopping stream...";
@@ -244,7 +243,6 @@ static bool isResolutionMatching(const QSize &actual, const QSize &target)
     if (target.isEmpty() || actual == target) {
         return true;
     }
-    // Allow horizontal 8-pixel CVT alignment difference
     return std::abs(actual.width() - target.width()) <= 8 && actual.height() == target.height();
 }
 
@@ -271,46 +269,37 @@ void PipeWireStreamController::onStreamSizeChanged(const QSize &size)
 void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &packet)
 {
     const QByteArray &data = packet.data();
-    static int mismatchDropCount = 0;
     if (!m_targetResolution.isEmpty() && !m_currentStreamResolution.isEmpty() && !isResolutionMatching(m_currentStreamResolution, m_targetResolution)) {
-        if (mismatchDropCount++ < 15) {
-            // Discard transitional packets for up to 15 frames (~250ms) while compositor changes mode
+        if (m_mismatchDropCount++ < 15) {
             return;
         }
         qWarning() << "PipeWireStreamController: Host-side resolution change confirmed to"
                    << m_currentStreamResolution << "(was" << m_targetResolution << ")";
         m_targetResolution = m_currentStreamResolution;
-        mismatchDropCount = 0;
+        m_mismatchDropCount = 0;
         emit streamSizeChanged(m_targetResolution);
     } else {
-        mismatchDropCount = 0;
+        m_mismatchDropCount = 0;
     }
 
-    // Active screen updates (video, browsing, window motions) count as screen activity to prevent false idle throttling.
-    // When throttled to 5 FPS, PipeWire may flush 1 residual frame during parameter renegotiation.
-    // Require rapid consecutive frames (< 150ms interval) to distinguish genuine screen animations
-    // from single residual renegotiation frames, preventing idle flapping.
-    static int s_consecutiveActive = 0;
-    static qint64 s_lastPacketTimeMs = 0;
     qint64 nowMs = m_fpsTimer.elapsed();
-    if (s_lastPacketTimeMs > 0 && (nowMs - s_lastPacketTimeMs) <= 150) {
-        s_consecutiveActive++;
+    if (m_lastPacketTimeMs > 0 && (nowMs - m_lastPacketTimeMs) <= 150) {
+        m_consecutiveActiveFrames++;
     } else {
-        s_consecutiveActive = 0;
+        m_consecutiveActiveFrames = 0;
     }
-    s_lastPacketTimeMs = nowMs;
+    m_lastPacketTimeMs = nowMs;
 
     m_lastActivityTimer.restart();
-    if (m_isIdle && s_consecutiveActive >= 2) {
+    if (m_isIdle && m_consecutiveActiveFrames >= 2) {
         m_isIdle = false;
-        s_consecutiveActive = 0;
+        m_consecutiveActiveFrames = 0;
         qInfo() << "PipeWireStreamController: Screen animation detected, restoring framerate to" << m_activeFramerate << "FPS";
         if (m_stream) {
             m_stream->setMaxFramerate(m_activeFramerate);
         }
     }
 
-    // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)
     if (m_motionQualityDelta > 0 && !packet.isKeyFrame() && data.size() > 40 * 1024) {
         onMotionActivity();
     }

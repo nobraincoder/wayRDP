@@ -232,8 +232,24 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
         qInfo() << "RdpGfxChannel: Received clean IDR keyframe after surface reset! Resuming video output.";
     }
 
+    const size_t frameHash = qHashBits(data.constData(), data.size());
+
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
+
+        // Hot-path optimization: identical back-to-back frames are a common artifact when the
+        // desktop is static or the encoder is briefly repeating the same frame. Dropping those
+        // duplicates reduces queue pressure without affecting correctness.
+        // Fast hash and size comparison avoids expensive byte-by-byte memcmp on large video payloads under lock.
+        if (!m_frameQueue.empty()) {
+            const QueuedVideoFrame &last = m_frameQueue.back();
+            if (last.isKeyFrame == isKeyFrame &&
+                last.data.size() == data.size() &&
+                last.hash == frameHash) {
+                return;
+            }
+        }
+
         if (m_frameQueue.size() > 60) {
             // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
             // In H.264, dropping a delta frame breaks the reference chain in mstsc,
@@ -245,7 +261,7 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
                        << "frames), cleared queue and requested IDR keyframe to resync stream";
             return;
         }
-        m_frameQueue.push_back({data, isKeyFrame});
+        m_frameQueue.push_back({data, isKeyFrame, frameHash});
     }
     m_frameQueueCond.notify_one();
 }
@@ -322,10 +338,10 @@ bool RdpGfxChannel::hasInFlightCapacity()
     // stalls or artificially caps throughput to ~30 FPS on high-performance clients.
     int64_t rtt = m_lastRttMs.load();
     size_t maxInFlight = 16;
-    if (rtt > 50) {
-        maxInFlight = 20;
-    } else if (rtt > 100) {
+    if (rtt > 100) {
         maxInFlight = 24;
+    } else if (rtt > 50) {
+        maxInFlight = 20;
     }
 
     if (m_pendingFrames.size() < maxInFlight) {
@@ -460,7 +476,7 @@ UINT RdpGfxChannel::capsAdvertiseCallback(RdpgfxServerContext* context, const RD
 
     for (UINT16 i = 0; i < capsAdvertise->capsSetCount; i++) {
         const RDPGFX_CAPSET* capsSet = &capsAdvertise->capsSets[i];
-        
+
         qInfo() << "RdpGfxChannel: Client advertised capSet[" << i << "] version:"
                 << QString("0x%1").arg(capsSet->version, 8, 16, QChar('0'))
                 << "flags:" << QString("0x%1").arg(capsSet->flags, 8, 16, QChar('0'));

@@ -36,6 +36,7 @@ struct MyPeerContext {
     bool activated;
     bool authenticated{false};
     bool isWindowsClient{false};
+    UINT16 highSurrogate{0};
 };
 
 class RdpServer : public QObject
@@ -68,6 +69,7 @@ signals:
     void requestedResolutionChanged(const QSize &resolution, double scale);
 
     void pointerMotionAbsolute(double x, double y);
+    void pointerMotion(double dx, double dy);
     void pointerButton(int button, uint state);
     void pointerAxis(double dx, double dy);
     void pointerAxisDiscrete(uint axis, int steps);
@@ -83,7 +85,7 @@ private:
     static BOOL peerAccepted(freerdp_listener* listener, freerdp_peer* peer);
     static BOOL peerContextNew(freerdp_peer* peer, rdpContext* context);
     static void peerContextFree(freerdp_peer* peer, rdpContext* context);
-    
+
     static DWORD WINAPI listenerThread(LPVOID param);
     static DWORD WINAPI peerThread(LPVOID param);
 
@@ -107,7 +109,8 @@ private:
     QString m_samFilePath;
     freerdp_listener* m_listener{nullptr};
     HANDLE m_listenerThread{nullptr};
-    bool m_running{false};
+    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_peerStopRequested{false};
 
 public:
     RdpGfxChannel m_gfxChannel;
@@ -116,6 +119,7 @@ public:
 
     RdpsndServerContext* m_rdpsndContext{nullptr};
     freerdp_peer* m_activePeer{nullptr};
+    HANDLE m_activePeerThread{nullptr};
     QMutex m_peerMutex;
     QMutex m_audioMutex;
     UINT16 m_audioTimestamp{0};

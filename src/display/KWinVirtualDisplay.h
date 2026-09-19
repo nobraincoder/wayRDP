@@ -38,6 +38,7 @@ public slots:
     void setScreenLocked(bool locked) override;
 
     void sendPointerMotionAbsolute(double x, double y) override;
+    void sendPointerMotion(double dx, double dy) override;
     void sendPointerButton(int button, uint state) override;
     void sendPointerAxis(double dx, double dy) override;
     void sendPointerAxisDiscrete(uint axis, int steps) override;
@@ -45,10 +46,10 @@ public slots:
     void sendKeyboardKeysym(int keysym, uint state) override;
 
 private slots:
-    void onCreateSessionResponse(uint code, const QVariantMap &results);
-    void onSelectDevicesResponse(uint code, const QVariantMap &results);
-    void onSelectSourcesResponse(uint code, const QVariantMap &results);
-    void onStartResponse(uint code, const QVariantMap &results);
+    void onCreateSessionResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
+    void onSelectDevicesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
+    void onSelectSourcesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
+    void onStartResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
 
 private:
     void setupVirtualDisplayResolution();
@@ -78,6 +79,11 @@ private:
     double m_accumulatedX{0.0};
     double m_accumulatedY{0.0};
     std::chrono::steady_clock::time_point m_lastAxisTime;
+    std::chrono::steady_clock::time_point m_lastDbusMotionTime{};
+
+    // Generation-based resolution debouncing
+    uint64_t m_resolutionGeneration{0};
+    QTimer *m_resolutionDebounceTimer{nullptr};
 
     // Screen lock state and nudge timer management
     bool m_isScreenLocked{false};

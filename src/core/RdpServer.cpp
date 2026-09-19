@@ -29,6 +29,21 @@
 #include <winpr/ntlm.h>
 #include <QTextStream>
 
+static QString decodeCredential(const char* data, int length, bool unicode)
+{
+    if (!data || length <= 0) {
+        return QString();
+    }
+
+    if (unicode) {
+        const auto* u16 = reinterpret_cast<const char16_t*>(data);
+        const int count = std::max(0, length / 2);
+        return QString::fromRawData(u16, count);
+    }
+
+    return QString::fromLatin1(QByteArray(data, length));
+}
+
 RdpServer::RdpServer(QObject *parent)
     : QObject(parent), m_listener(nullptr), m_listenerThread(nullptr), m_running(false),
       m_rdpsndContext(nullptr), m_activePeer(nullptr), m_audioTimestamp(0), m_audioReady(false)
@@ -50,7 +65,6 @@ RdpServer::RdpServer(QObject *parent)
     connect(&m_cliprdrChannel, &RdpCliprdrChannel::clientFilesReceived,
             this, &RdpServer::clientFilesReceived);
 
-    // Initialize supported PCM audio formats (48000Hz and 44100Hz 16-bit stereo)
     m_pcmFormats[0].wFormatTag = WAVE_FORMAT_PCM;
     m_pcmFormats[0].nChannels = 2;
     m_pcmFormats[0].nSamplesPerSec = 48000;
@@ -82,33 +96,42 @@ bool RdpServer::authenticateUser(const QString& username, const QString& passwor
 
 bool RdpServer::start(int port)
 {
-    if (m_running)
+    if (m_running.load())
         return false;
 
-    // Generate certificates if they do not exist
-    AuthManager::generateCertificate();
+    if (AuthManager::isNoAuthEnabled()) {
+        qCritical() << "********************************************************************************";
+        qCritical() << "* SECURITY WARNING: RDP_NO_AUTH IS ENABLED! ALL AUTHENTICATION IS BYPASSED!     *";
+        qCritical() << "* ANY CLIENT CAN CONNECT AND CONTROL THIS DESKTOP WITHOUT PROVIDING A PASSWORD!*";
+        qCritical() << "* DO NOT USE THIS MODE ON UNTRUSTED OR PUBLIC NETWORKS!                         *";
+        qCritical() << "********************************************************************************";
+    }
 
-    // Prepare SAM database for NLA authentication if RDP_PASSWORD is configured
+    m_peerStopRequested.store(false);
+    m_running.store(true);
+
+    AuthManager::generateCertificate();
     m_samFilePath = AuthManager::setupSamDatabase();
 
     m_listener = freerdp_listener_new();
     if (!m_listener) {
         qWarning() << "Failed to create FreeRDP listener";
+        m_running.store(false);
         return false;
     }
 
     m_listener->info = this;
     m_listener->PeerAccepted = peerAccepted;
-    
+
     qInfo() << "Opening FreeRDP listener on primary port" << port;
     if (!m_listener->Open(m_listener, nullptr, port)) {
         qWarning() << "Failed to open FreeRDP listener on primary port" << port;
         freerdp_listener_free(m_listener);
         m_listener = nullptr;
+        m_running.store(false);
         return false;
     }
 
-    // Support dual listening only if started on standard RDP port 3389
     if (port == 3389) {
         int altPort = 3390;
         qInfo() << "Attempting to also open FreeRDP listener on dual port" << altPort;
@@ -119,34 +142,50 @@ bool RdpServer::start(int port)
         }
     }
 
-    m_running = true;
     m_listenerThread = CreateThread(nullptr, 0, listenerThread, this, 0, nullptr);
-    
     return true;
 }
 
 void RdpServer::stop()
 {
-    if (!m_running)
+    if (!m_running.exchange(false))
         return;
+
+    m_peerStopRequested.store(true);
 
     if (m_networkAdaptTimer) {
         m_networkAdaptTimer->stop();
     }
 
-    m_running = false;
+    freerdp_peer* peerToClose = nullptr;
+    HANDLE peerThreadToJoin = nullptr;
+    {
+        QMutexLocker locker(&m_peerMutex);
+        peerToClose = m_activePeer;
+        m_activePeer = nullptr;
+        peerThreadToJoin = m_activePeerThread;
+        m_activePeerThread = nullptr;
+    }
+
+    if (peerToClose) {
+        peerToClose->Close(peerToClose);
+    }
+
+    if (peerThreadToJoin) {
+        WaitForSingleObject(peerThreadToJoin, INFINITE);
+        CloseHandle(peerThreadToJoin);
+    }
+
     m_gfxChannel.close();
     m_cliprdrChannel.close();
     m_cursorManager.reset();
-    m_activePeer = nullptr;
 
     {
         QMutexLocker locker(&m_audioMutex);
-        // FreeRDP 3 auto-frees rdpsnd context on VCM close; do not double-free.
         m_rdpsndContext = nullptr;
         m_audioReady = false;
     }
-    
+
     if (m_listener) {
         m_listener->Close(m_listener);
         if (m_listenerThread) {
@@ -165,8 +204,8 @@ DWORD WINAPI RdpServer::listenerThread(LPVOID param)
 {
     RdpServer* server = static_cast<RdpServer*>(param);
     qInfo() << "FreeRDP Listener thread started";
-    
-    while (server->m_running) {
+
+    while (server->m_running.load() && !server->m_peerStopRequested.load()) {
         HANDLE events[32];
         DWORD count = server->m_listener->GetEventHandles(server->m_listener, events, 32);
         if (count > 0) {
@@ -181,7 +220,7 @@ DWORD WINAPI RdpServer::listenerThread(LPVOID param)
             Sleep(50);
         }
     }
-    
+
     qInfo() << "FreeRDP Listener thread stopped";
     return 0;
 }
@@ -190,24 +229,39 @@ BOOL RdpServer::peerAccepted(freerdp_listener* listener, freerdp_peer* peer)
 {
     qInfo() << "RDP peer accepted from client:" << peer->hostname;
     RdpServer* server = static_cast<RdpServer*>(listener->info);
-    
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) {
+        qWarning() << "Rejecting connection: server is stopping or inactive";
+        return FALSE;
+    }
+
+    freerdp_peer* oldPeer = nullptr;
+    HANDLE oldThread = nullptr;
     {
         QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer != nullptr) {
             qInfo() << "Disconnecting previous/stale RDP session to accept new connection from" << peer->hostname;
-            freerdp_peer* oldPeer = server->m_activePeer;
+            oldPeer = server->m_activePeer;
             server->m_activePeer = nullptr;
-            oldPeer->Close(oldPeer);
+            oldThread = server->m_activePeerThread;
+            server->m_activePeerThread = nullptr;
         }
         server->m_activePeer = peer;
         server->m_scrollAccumulatorX = 0.0;
         server->m_scrollAccumulatorY = 0.0;
     }
-    
+
+    if (oldPeer) {
+        oldPeer->Close(oldPeer);
+    }
+    if (oldThread) {
+        WaitForSingleObject(oldThread, INFINITE);
+        CloseHandle(oldThread);
+    }
+
     peer->ContextSize = sizeof(MyPeerContext);
     peer->ContextNew = peerContextNew;
     peer->ContextFree = peerContextFree;
-    
+
     if (!freerdp_peer_context_new(peer)) {
         qWarning() << "Failed to create context for accepted peer";
         QMutexLocker locker(&server->m_peerMutex);
@@ -216,14 +270,15 @@ BOOL RdpServer::peerAccepted(freerdp_listener* listener, freerdp_peer* peer)
         }
         return FALSE;
     }
-    
+
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(peer->context);
     ctx->server = server;
     ctx->peer = peer;
     ctx->activated = false;
-    
-    ctx->thread = CreateThread(nullptr, 0, peerThread, ctx, 0, nullptr);
-    if (!ctx->thread) {
+    ctx->highSurrogate = 0;
+
+    HANDLE thread = CreateThread(nullptr, 0, peerThread, ctx, 0, nullptr);
+    if (!thread) {
         qWarning() << "Failed to create thread for peer handling";
         freerdp_peer_context_free(peer);
         QMutexLocker locker(&server->m_peerMutex);
@@ -232,7 +287,15 @@ BOOL RdpServer::peerAccepted(freerdp_listener* listener, freerdp_peer* peer)
         }
         return FALSE;
     }
-    
+
+    ctx->thread = thread;
+    {
+        QMutexLocker locker(&server->m_peerMutex);
+        if (server->m_activePeer == peer) {
+            server->m_activePeerThread = thread;
+        }
+    }
+
     return TRUE;
 }
 
@@ -330,7 +393,6 @@ static UINT disp_monitor_layout(DispServerContext* context, const DISPLAY_CONTRO
     } else if (desktopScale > 100 && desktopScale <= 500) {
         scale = static_cast<double>(desktopScale) / 100.0;
     } else if (physicalWidth > 0 && monitorSize.width() > 0) {
-        // Derive DPI if physical dimensions are supplied
         double dpi = (static_cast<double>(monitorSize.width()) / (static_cast<double>(physicalWidth) / 25.4));
         if (dpi > 120.0) {
             scale = std::round((dpi / 96.0) * 4.0) / 4.0;
@@ -400,12 +462,11 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     MyPeerContext* ctx = static_cast<MyPeerContext*>(param);
     freerdp_peer* peer = ctx->peer;
     RdpServer* server = ctx->server;
-    
+
     qInfo() << "Peer thread running for connection:" << peer->hostname;
-    
+
     rdpSettings* settings = peer->context->settings;
-    
-    // Configure secure protocols
+
     freerdp_settings_set_bool(settings, FreeRDP_AutoLogonEnabled, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE);
@@ -413,7 +474,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, TRUE);
 
     bool hasRdpPassword = !qEnvironmentVariable("RDP_PASSWORD").isEmpty();
-    bool noAuth = (qEnvironmentVariable("RDP_NO_AUTH") == "1");
+    bool noAuth = AuthManager::isNoAuthEnabled();
 
     if (hasRdpPassword && !noAuth) {
         if (server->m_samFilePath.isEmpty() || !QFile::exists(server->m_samFilePath)) {
@@ -428,12 +489,14 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         }
     } else {
         freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
-        if (!noAuth && !hasRdpPassword) {
+        if (noAuth) {
+            qInfo() << "Operating in NO_AUTH mode (RDP_NO_AUTH set) for connection:" << peer->hostname;
+            freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, TRUE);
+        } else if (!hasRdpPassword) {
             qInfo() << "Operating in TLS / PAM mode (RDP_PASSWORD not set) for connection:" << peer->hostname;
         }
     }
-    
-    // Capabilities and graphics pipeline
+
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, TRUE);
@@ -446,7 +509,6 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_HasRelativeMouseEvent, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, TRUE);
 
-    // Load SSL certificate and private key
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QString certPath = certDir + "/server.crt";
     QString keyPath = certDir + "/server.key";
@@ -478,8 +540,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         if (cert) freerdp_certificate_free(cert);
         if (key) freerdp_key_free(key);
     }
-    
-    // Register Logon and Activation callbacks
+
     peer->Logon = peerLogon;
     peer->Activate = peerActivate;
     peer->Capabilities = peerCapabilities;
@@ -496,23 +557,29 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         peer->context->input->KeyboardEvent = peerKeyboardEvent;
         peer->context->input->UnicodeKeyboardEvent = peerUnicodeKeyboardEvent;
     }
-    
+
     if (!peer->Initialize(peer)) {
         qWarning() << "Failed to initialize peer";
         return 0;
     }
-    
-    // Phase 2: Peer Negotiation Loop
+
     qInfo() << "Entering peer negotiation loop...";
-    while (server->m_running && !ctx->activated) {
-        HANDLE events[64];
-        DWORD count = peer->GetEventHandles(peer, events, 64);
+    constexpr DWORD MaxPeerEvents = 64;
+    while (server->m_running.load() && !server->m_peerStopRequested.load() && !ctx->activated) {
+        HANDLE events[MaxPeerEvents];
+        DWORD count = peer->GetEventHandles(peer, events, MaxPeerEvents);
         if (count == 0) {
             qWarning() << "Failed to get event handles for peer during negotiation";
             break;
         }
+        if (count > MaxPeerEvents) {
+            count = MaxPeerEvents;
+        }
 
         DWORD status = WaitForMultipleObjects(count, events, FALSE, 100);
+        if (server->m_peerStopRequested.load() || !server->m_running.load()) {
+            break;
+        }
         if (status == WAIT_FAILED) {
             qWarning() << "WaitForMultipleObjects failed during negotiation";
             break;
@@ -525,25 +592,30 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
             }
         }
     }
-    
-    // Phase 3: Client Active Packet Processing Loop
-    if (ctx->activated && server->m_running) {
+
+    if (ctx->activated && server->m_running.load() && !server->m_peerStopRequested.load()) {
         qInfo() << "RDP peer connection is fully active!";
-        
-        while (server->m_running && ctx->activated) {
-            HANDLE events[64];
-            DWORD count = peer->GetEventHandles(peer, events, 32);
+
+        while (server->m_running.load() && !server->m_peerStopRequested.load() && ctx->activated) {
+            HANDLE events[MaxPeerEvents];
+            DWORD count = peer->GetEventHandles(peer, events, MaxPeerEvents - 1);
+            if (count > MaxPeerEvents - 1) {
+                count = MaxPeerEvents - 1;
+            }
             HANDLE vcmEvent = ctx->vcm ? WTSVirtualChannelManagerGetEventHandle(ctx->vcm) : nullptr;
-            if (vcmEvent) {
+            if (vcmEvent && count < MaxPeerEvents) {
                 events[count++] = vcmEvent;
             }
-            
+
             DWORD status = WaitForMultipleObjects(count, events, FALSE, 100);
+            if (server->m_peerStopRequested.load() || !server->m_running.load()) {
+                break;
+            }
             if (status == WAIT_FAILED) {
                 qWarning() << "WaitForMultipleObjects failed inside active peer loop";
                 break;
             }
-            
+
             if (status != WAIT_TIMEOUT) {
                 if (!peer->CheckFileDescriptor(peer)) {
                     qWarning() << "Active peer disconnected";
@@ -566,7 +638,7 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
             }
         }
     }
-    
+
     qInfo() << "Peer thread clean up for connection:" << peer->hostname;
 
     if (ctx->disp) {
@@ -577,13 +649,18 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         disp_server_context_free(ctx->disp);
         ctx->disp = nullptr;
     }
-    
+
+    HANDLE selfThreadHandle = nullptr;
     bool wasActive = false;
     {
         QMutexLocker locker(&server->m_peerMutex);
         if (server->m_activePeer == peer) {
             server->m_activePeer = nullptr;
             wasActive = true;
+        }
+        if (server->m_activePeerThread == ctx->thread) {
+            selfThreadHandle = server->m_activePeerThread;
+            server->m_activePeerThread = nullptr;
         }
     }
 
@@ -600,22 +677,22 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         server->m_currentQuality = 95;
         {
             QMutexLocker locker(&server->m_audioMutex);
-            // FreeRDP 3 automatically frees the rdpsnd context when the
-            // virtual channel manager (VCM) is closed. Calling
-            // rdpsnd_server_context_free() here causes a double-free
-            // (SIGABRT "double free or corruption (out)").
             server->m_rdpsndContext = nullptr;
             server->m_audioReady = false;
         }
     }
-    
+
     if (ctx->activated) {
         ctx->activated = false;
         QMetaObject::invokeMethod(server, "clientDisconnected", Qt::QueuedConnection);
     }
-    
+
     peer->Disconnect(peer);
-    
+
+    if (selfThreadHandle) {
+        CloseHandle(selfThreadHandle);
+    }
+
     return 0;
 }
 
@@ -624,33 +701,33 @@ BOOL RdpServer::peerLogon(freerdp_peer* peer, const SEC_WINNT_AUTH_IDENTITY* ide
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(peer->context);
     RdpServer* server = ctx->server;
 
-    // If NLA security was active, FreeRDP has authenticated the client against the SAM database
+    if (AuthManager::isNoAuthEnabled()) {
+        qInfo() << "peerLogon: Authentication bypassed due to RDP_NO_AUTH";
+        ctx->authenticated = true;
+        return TRUE;
+    }
+
     if (freerdp_settings_get_bool(peer->context->settings, FreeRDP_NlaSecurity)) {
         qInfo() << "peerLogon: Connection authorized via NLA SAM database";
         ctx->authenticated = true;
         return TRUE;
     }
 
-    // If no identity provided during early TLS negotiation, defer authentication to peerPostConnect
     if (!identity || (!identity->User && identity->UserLength == 0)) {
         qInfo() << "peerLogon: No identity in early handshake, deferring to PostConnect (automatic:" << automatic << ")";
         return TRUE;
     }
-    
-    // Extract credentials securely based on ANSI vs Unicode encoding flags
-    bool isUnicode = (identity->Flags & SEC_WINNT_AUTH_IDENTITY_UNICODE) || !(identity->Flags & SEC_WINNT_AUTH_IDENTITY_ANSI);
+
+    bool isUnicode = (identity->Flags & SEC_WINNT_AUTH_IDENTITY_UNICODE) ||
+                     !(identity->Flags & SEC_WINNT_AUTH_IDENTITY_ANSI);
+
     QString username;
     QString password;
-    if (isUnicode) {
-        if (identity->User && identity->UserLength > 0)
-            username = QString::fromUtf16(reinterpret_cast<const char16_t*>(identity->User), identity->UserLength);
-        if (identity->Password && identity->PasswordLength > 0)
-            password = QString::fromUtf16(reinterpret_cast<const char16_t*>(identity->Password), identity->PasswordLength);
-    } else {
-        if (identity->User && identity->UserLength > 0)
-            username = QString::fromUtf8(reinterpret_cast<const char*>(identity->User), identity->UserLength);
-        if (identity->Password && identity->PasswordLength > 0)
-            password = QString::fromUtf8(reinterpret_cast<const char*>(identity->Password), identity->PasswordLength);
+    if (identity->User && identity->UserLength > 0) {
+        username = decodeCredential(reinterpret_cast<const char*>(identity->User), identity->UserLength, isUnicode);
+    }
+    if (identity->Password && identity->PasswordLength > 0) {
+        password = decodeCredential(reinterpret_cast<const char*>(identity->Password), identity->PasswordLength, isUnicode);
     }
 
     if (username.contains('\\')) {
@@ -672,7 +749,7 @@ BOOL RdpServer::peerLogon(freerdp_peer* peer, const SEC_WINNT_AUTH_IDENTITY* ide
 
     qInfo() << "peerLogon: authenticating user:" << username
             << "(password length:" << password.length() << "automatic:" << automatic << ")";
-    
+
     bool authenticated = server->authenticateUser(username, password);
     if (authenticated) {
         ctx->authenticated = true;
@@ -690,9 +767,9 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
         qInfo() << "peerActivate: Peer already activated, skipping re-initialization.";
         return TRUE;
     }
-    
+
     qInfo() << "Client activation capability exchange completed. Initializing Graphics Pipeline (RDPGFX)...";
-    
+
     rdpSettings* settings = peer->context->settings;
     UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
     UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
@@ -750,14 +827,12 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             }
         }
     }
-    
-    // Open Virtual Channel Manager
+
     if (!ctx->vcm || !WTSVirtualChannelManagerOpen(ctx->vcm)) {
         qWarning() << "Failed to open virtual channel manager";
         return FALSE;
     }
 
-    // Register Input Callbacks
     if (peer->context && peer->context->input) {
         peer->context->input->param1 = server;
         peer->context->input->SynchronizeEvent = peerSynchronizeEvent;
@@ -772,10 +847,8 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
         peer->context->update->SuppressOutput = peerSuppressOutput;
     }
 
-    // Initialize Cliprdr channel
     server->m_cliprdrChannel.initialize(ctx->vcm, reinterpret_cast<rdpContext*>(ctx));
 
-    // Initialize Audio Output (rdpsnd) channel if enabled
     bool audioEnabled = true;
     if (qEnvironmentVariableIsSet("RDP_AUDIO")) {
         QString a = qEnvironmentVariable("RDP_AUDIO").trimmed().toLower();
@@ -796,7 +869,7 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             rdpsnd->server_formats = server->m_pcmFormats;
             rdpsnd->num_server_formats = 2;
             rdpsnd->src_format = &server->m_pcmFormats[0];
-            rdpsnd->latency = 20; // 20ms buffer for low latency and smooth jitter-free playback
+            rdpsnd->latency = 20;
             rdpsnd->Activated = rdpsnd_activated;
             rdpsnd->ConfirmBlock = rdpsnd_confirm_block;
 
@@ -815,8 +888,6 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
         QMetaObject::invokeMethod(server->m_networkAdaptTimer, "start", Qt::QueuedConnection);
     }
 
-
-    // Initialize RDPGFX channel via RdpGfxChannel component
     if (!server->m_gfxChannel.initialize(ctx->vcm, reinterpret_cast<rdpContext*>(ctx))) {
         qWarning() << "Failed to initialize RDPGFX channel";
         return FALSE;
@@ -828,7 +899,7 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             setup_and_open_disp(ctx, server);
         }
     }
-    
+
     ctx->activated = true;
 
     UINT32 connectionType = freerdp_settings_get_uint32(settings, FreeRDP_ConnectionType);
@@ -889,16 +960,14 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     server->m_currentQuality = targetQuality;
 
     emit server->clientEncodingConfigured(targetFps, targetQuality);
-    
+
     qInfo() << "Negotiated Dynamic resolution:" << width << "x" << height << "@ scale" << effectiveScale;
-    
+
     server->m_clientScale = effectiveScale;
     server->m_inputSettings.reload();
 
     emit server->clientConnected(QSize(width, height), effectiveScale);
 
-    // Client-side hardware cursor: Allow client to render its own cursor locally at native refresh rate.
-    // Cursor shapes are synchronized dynamically via updateCursorShape.
     return TRUE;
 }
 
@@ -915,28 +984,24 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     RdpServer* server = ctx->server;
     rdpSettings* settings = peer->context->settings;
 
-    // Detect client OS type (Windows, Mac, iOS, Android, etc.)
     UINT32 osMajor = freerdp_settings_get_uint32(settings, FreeRDP_OsMajorType);
-    ctx->isWindowsClient = (osMajor == 1 /* OSMAJORTYPE_WINDOWS */);
+    ctx->isWindowsClient = (osMajor == 1);
     qInfo() << "peerPostConnect: Client OS:" << freerdp_peer_os_major_type_string(peer)
             << "(osMajor:" << osMajor << ") isWindows:" << ctx->isWindowsClient;
 
-    // 1. Passwordless LAN mode
-    if (qEnvironmentVariable("RDP_NO_AUTH") == "1") {
-        qInfo() << "peerPostConnect: Authentication bypassed due to RDP_NO_AUTH=1";
+    if (AuthManager::isNoAuthEnabled()) {
+        qInfo() << "peerPostConnect: Authentication bypassed due to RDP_NO_AUTH";
         ctx->authenticated = true;
         return TRUE;
     }
 
-    // 2. Previously authenticated via NLA SAM database or peerLogon
     UINT32 selectedProtocol = freerdp_settings_get_uint32(settings, FreeRDP_SelectedProtocol);
-    bool isNla = (selectedProtocol == 2 /* PROTOCOL_HYBRID */ || selectedProtocol == 8 /* PROTOCOL_HYBRID_EX */);
+    bool isNla = (selectedProtocol == 2 || selectedProtocol == 8);
     if (ctx->authenticated || (isNla && freerdp_settings_get_bool(settings, FreeRDP_NlaSecurity))) {
         qInfo() << "peerPostConnect: Peer authorized via NLA SAM database (selectedProtocol:" << selectedProtocol << ")";
         return TRUE;
     }
 
-    // 3. Extract credentials from Client Info PDU (TLS / Standard RDP)
     const char* u = freerdp_settings_get_string(settings, FreeRDP_Username);
     const char* p = freerdp_settings_get_string(settings, FreeRDP_Password);
 
@@ -976,33 +1041,10 @@ BOOL RdpServer::peerPostConnect(freerdp_peer* peer)
     qInfo() << "PostConnect stage reached successfully and user authenticated";
     return TRUE;
 }
+
 void RdpServer::sendVideoFrame(const QByteArray &data, bool isKeyFrame)
 {
     m_gfxChannel.sendFrame(data, isKeyFrame);
-}
-
-void RdpServer::updateCursorShape(const QImage &image, const QPoint &hotspot)
-{
-    m_cursorManager.updateCursorShape(m_activePeer, image, hotspot);
-}
-
-void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
-{
-    if (m_activePeer && m_activePeer->context) {
-        if (m_activePeer->context->settings) {
-            freerdp_settings_set_uint32(m_activePeer->context->settings, FreeRDP_DesktopWidth, width);
-            freerdp_settings_set_uint32(m_activePeer->context->settings, FreeRDP_DesktopHeight, height);
-        }
-        if (m_activePeer->context->update && m_activePeer->context->update->DesktopResize) {
-            m_activePeer->context->update->DesktopResize(m_activePeer->context);
-        }
-    }
-    m_gfxChannel.resetSurface(width, height);
-}
-
-void RdpServer::purgeStaleFrames()
-{
-    m_gfxChannel.purgeStaleFrames();
 }
 
 BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
@@ -1010,7 +1052,7 @@ BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
     Q_UNUSED(flags);
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
-    if (!server) return TRUE;
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) return TRUE;
 
     QSet<quint32> stuck;
     {
@@ -1028,15 +1070,10 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
 {
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
-    if (!server) return TRUE;
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) return TRUE;
 
     emit server->clientActivity();
 
-    // 1. Wheel and Horizontal Wheel Events
-    // Per [MS-RDPBCGR] 2.2.8.1.1.3.1.1, when PTR_FLAGS_WHEEL or PTR_FLAGS_HWHEEL is set,
-    // x and y MUST be set to 0 and NO mouse motion or button events should be processed.
-    // Handling wheel packets in isolation prevents cursor teleportation to (0, 0)
-    // and eliminates jitter during trackpad/mouse scrolling.
     if (flags & (PTR_FLAGS_WHEEL | PTR_FLAGS_HWHEEL)) {
         int axis = flags & WheelRotationMask;
         if (axis & PTR_FLAGS_WHEEL_NEGATIVE) {
@@ -1061,22 +1098,21 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
         return TRUE;
     }
 
-    // 2. Movement and Clicks
     if ((flags & PTR_FLAGS_MOVE) || (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3))) {
         emit server->pointerMotionAbsolute(static_cast<double>(x), static_cast<double>(y));
     }
 
     if (flags & PTR_FLAGS_BUTTON1) {
         uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
-        emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_LEFT /* 272 */), state);
+        emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_LEFT), state);
     }
     if (flags & PTR_FLAGS_BUTTON2) {
         uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
-        emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_RIGHT /* 273 */), state);
+        emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_RIGHT), state);
     }
     if (flags & PTR_FLAGS_BUTTON3) {
         uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
-        emit server->pointerButton(BTN_MIDDLE /* 274 */, state);
+        emit server->pointerButton(BTN_MIDDLE, state);
     }
 
     return TRUE;
@@ -1084,26 +1120,28 @@ BOOL RdpServer::peerMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y
 
 BOOL RdpServer::peerRelMouseEvent(rdpInput* input, UINT16 flags, INT16 xDelta, INT16 yDelta)
 {
-    Q_UNUSED(xDelta);
-    Q_UNUSED(yDelta);
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
-    if (!server) return TRUE;
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) return TRUE;
 
     emit server->clientActivity();
+
+    if (xDelta != 0 || yDelta != 0) {
+        emit server->pointerMotion(static_cast<double>(xDelta), static_cast<double>(yDelta));
+    }
 
     if (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3)) {
         if (flags & PTR_FLAGS_BUTTON1) {
             uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
-            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_LEFT /* 272 */), state);
+            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_LEFT), state);
         }
         if (flags & PTR_FLAGS_BUTTON2) {
             uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
-            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_RIGHT /* 273 */), state);
+            emit server->pointerButton(server->m_inputSettings.mapPointerButton(BTN_RIGHT), state);
         }
         if (flags & PTR_FLAGS_BUTTON3) {
             uint state = (flags & PTR_FLAGS_DOWN) ? 1 : 0;
-            emit server->pointerButton(BTN_MIDDLE /* 274 */, state);
+            emit server->pointerButton(BTN_MIDDLE, state);
         }
     }
     return TRUE;
@@ -1113,7 +1151,7 @@ BOOL RdpServer::peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, 
 {
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
-    if (!server) return TRUE;
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) return TRUE;
 
     emit server->clientActivity();
 
@@ -1123,11 +1161,11 @@ BOOL RdpServer::peerExtendedMouseEvent(rdpInput* input, UINT16 flags, UINT16 x, 
 
     if (flags & PTR_XFLAGS_BUTTON1) {
         uint state = (flags & PTR_XFLAGS_DOWN) ? 1 : 0;
-        emit server->pointerButton(BTN_SIDE /* 275 */, state);
+        emit server->pointerButton(BTN_SIDE, state);
     }
     if (flags & PTR_XFLAGS_BUTTON2) {
         uint state = (flags & PTR_XFLAGS_DOWN) ? 1 : 0;
-        emit server->pointerButton(BTN_EXTRA /* 276 */, state);
+        emit server->pointerButton(BTN_EXTRA, state);
     }
     return TRUE;
 }
@@ -1136,7 +1174,7 @@ BOOL RdpServer::peerKeyboardEvent(rdpInput* input, UINT16 flags, UINT8 code)
 {
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
-    if (!server) return TRUE;
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) return TRUE;
 
     emit server->clientActivity();
 
@@ -1165,16 +1203,41 @@ BOOL RdpServer::peerUnicodeKeyboardEvent(rdpInput* input, UINT16 flags, UINT16 c
 {
     MyPeerContext* ctx = reinterpret_cast<MyPeerContext*>(input->context);
     RdpServer* server = ctx ? ctx->server : static_cast<RdpServer*>(input->param1);
-    if (!server) return TRUE;
+    if (!server || !server->m_running.load() || server->m_peerStopRequested.load()) return TRUE;
 
     emit server->clientActivity();
 
-    auto text = QString(QChar::fromUcs2(code));
-    if (text.isEmpty()) {
+    uint32_t codepoint = 0;
+    if (code >= 0xD800 && code <= 0xDBFF) {
+        // High surrogate - buffer it and wait for low surrogate
+        if (ctx) {
+            ctx->highSurrogate = code;
+        }
+        return TRUE;
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+        // Low surrogate - combine with previously buffered high surrogate
+        if (ctx && ctx->highSurrogate >= 0xD800 && ctx->highSurrogate <= 0xDBFF) {
+            codepoint = 0x10000 + (((static_cast<uint32_t>(ctx->highSurrogate) - 0xD800) << 10) |
+                                  (static_cast<uint32_t>(code) - 0xDC00));
+            ctx->highSurrogate = 0;
+        } else {
+            // Unpaired low surrogate - discard
+            if (ctx) ctx->highSurrogate = 0;
+            return TRUE;
+        }
+    } else {
+        // Regular BMP code point
+        if (ctx) {
+            ctx->highSurrogate = 0;
+        }
+        codepoint = code;
+    }
+
+    if (codepoint == 0) {
         return TRUE;
     }
 
-    auto keysym = xkb_utf32_to_keysym(text.toUcs4().first());
+    auto keysym = xkb_utf32_to_keysym(codepoint);
     if (!keysym) {
         return TRUE;
     }
@@ -1257,7 +1320,6 @@ void RdpServer::checkNetworkAdaptation()
     if (smoothed <= 0) {
         smoothed = rtt;
     } else {
-        // EWMA: 70% previous, 30% new sample
         smoothed = (smoothed * 7 + rtt * 3) / 10;
     }
     m_smoothedRttMs = smoothed;
@@ -1321,7 +1383,6 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
     int selectedIndex = -1;
     uint32_t selectedRate = 48000;
 
-    // 1. First choice: 48000Hz 16-bit stereo PCM
     for (size_t i = 0; i < context->num_client_formats; i++) {
         const AUDIO_FORMAT* fmt = &context->client_formats[i];
         if (fmt->wFormatTag == WAVE_FORMAT_PCM && fmt->nChannels == 2 &&
@@ -1332,7 +1393,6 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
         }
     }
 
-    // 2. Second choice: 44100Hz 16-bit stereo PCM
     if (selectedIndex < 0) {
         for (size_t i = 0; i < context->num_client_formats; i++) {
             const AUDIO_FORMAT* fmt = &context->client_formats[i];
@@ -1345,7 +1405,6 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
         }
     }
 
-    // 3. Fallback: Any 16-bit stereo PCM
     if (selectedIndex < 0) {
         for (size_t i = 0; i < context->num_client_formats; i++) {
             const AUDIO_FORMAT* fmt = &context->client_formats[i];
@@ -1358,7 +1417,6 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
         }
     }
 
-    // 4. Ultimate fallback: format 0
     if (selectedIndex < 0 && context->num_client_formats > 0) {
         selectedIndex = 0;
         selectedRate = context->client_formats[0].nSamplesPerSec > 0 ? context->client_formats[0].nSamplesPerSec : 44100;
@@ -1367,11 +1425,7 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
     if (selectedIndex >= 0) {
         qInfo() << "Selecting audio format index:" << selectedIndex << "with sample rate:" << selectedRate;
 
-        // MUST set latency and src_format BEFORE SelectFormat, because SelectFormat
-        // internally computes out_frames = src_format->nSamplesPerSec * latency / 1000
-        context->latency = 20; // 20ms fragment size for smooth low-latency jitter-free playback
-
-        // Update src_format to match the selected sample rate
+        context->latency = 20;
         if (selectedRate == 44100) {
             context->src_format = &server->m_pcmFormats[1];
         } else {
@@ -1379,10 +1433,6 @@ void RdpServer::rdpsnd_activated(RdpsndServerContext* context)
         }
 
         context->SelectFormat(context, static_cast<UINT16>(selectedIndex));
-
-        // NOTE: Do NOT call SetVolume(0xFFFF) — it forcibly sets the client OS master volume to 100%,
-        // which causes ear-splitting loudness and digital clipping on the client!
-        // Leaving client volume untouched preserves the user's preferred local volume level.
 
         server->m_audioSampleRate = selectedRate;
         server->m_audioFramesSent = 0;
@@ -1414,11 +1464,6 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     size_t nframes = data.size() / 4;
     if (nframes == 0) return;
 
-    // Client flow control: if client sends WaveConfirm (like Windows mstsc),
-    // monitor in-flight blocks. If > 10 blocks (200ms) remain unconsumed on client,
-    // skip transmission so client's queue drains rather than accumulating delay.
-    // Previous threshold of 5 (100ms) was too aggressive and caused frequent drops
-    // that made audio sound choppy or different from the source.
     if (m_clientConfirmsBlocks) {
         int inFlight = (m_rdpsndContext->block_no - m_lastConfirmedBlock.load() + 256) % 256;
         if (inFlight > 10) {
@@ -1435,9 +1480,6 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     size_t payloadSize = data.size();
     QByteArray modifiedData;
 
-    // Packet Loss Concealment (PLC): if the previous packet was dropped to bound
-    // client latency, smoothly bridge the first 64 samples (1.3ms) from the last
-    // played sample value to completely eliminate audible clicks, pops, and crackle.
     if (m_audioDroppedPrevious && totalSamples >= 128) {
         modifiedData = data;
         int16_t* samples = reinterpret_cast<int16_t*>(modifiedData.data());
@@ -1459,22 +1501,17 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
         }
     }
 
-    // For modern Windows clients (Windows 8/10/11 MSTSC announces clientVersion >= 8),
-    // SendSamples2 transmits raw PCM audio directly via atomic SNDC_WAVE2 PDUs without
-    // going through FreeRDP's lossy DSP resampler or splitting/zeroing packet headers.
-    // Per MS-RDPEA 2.2.3.10, wTimeStamp and dwAudioTimeStamp must be set to the monotonic
-    // millisecond system clock from system boot so client jitter buffers keep perfect A/V sync.
     const UINT64 nowMs = GetTickCount64();
     const UINT16 timestamp16 = static_cast<UINT16>(nowMs % 65536);
     const UINT32 timestamp32 = static_cast<UINT32>(nowMs & 0xFFFFFFFF);
 
     if (m_rdpsndContext->clientVersion >= 8 && m_rdpsndContext->SendSamples2) {
         UINT rc = m_rdpsndContext->SendSamples2(m_rdpsndContext,
-                                               m_rdpsndContext->selected_client_format,
-                                               payloadData,
-                                               payloadSize,
-                                               timestamp16,
-                                               timestamp32);
+                                                m_rdpsndContext->selected_client_format,
+                                                payloadData,
+                                                payloadSize,
+                                                timestamp16,
+                                                timestamp32);
         if (rc == CHANNEL_RC_OK) {
             return;
         }
@@ -1483,3 +1520,36 @@ void RdpServer::sendAudioSamples(const QByteArray &data)
     m_rdpsndContext->SendSamples(m_rdpsndContext, payloadData, nframes, timestamp16);
 }
 
+void RdpServer::updateCursorShape(const QImage &image, const QPoint &hotspot)
+{
+    freerdp_peer* peer = nullptr;
+    {
+        QMutexLocker locker(&m_peerMutex);
+        peer = m_activePeer;
+    }
+    if (peer) {
+        m_cursorManager.updateCursorShape(peer, image, hotspot);
+    }
+}
+
+void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
+{
+    {
+        QMutexLocker locker(&m_peerMutex);
+        if (m_activePeer && m_activePeer->context) {
+            if (m_activePeer->context->settings) {
+                freerdp_settings_set_uint32(m_activePeer->context->settings, FreeRDP_DesktopWidth, width);
+                freerdp_settings_set_uint32(m_activePeer->context->settings, FreeRDP_DesktopHeight, height);
+            }
+            if (m_activePeer->context->update && m_activePeer->context->update->DesktopResize) {
+                m_activePeer->context->update->DesktopResize(m_activePeer->context);
+            }
+        }
+    }
+    m_gfxChannel.resetSurface(width, height);
+}
+
+void RdpServer::purgeStaleFrames()
+{
+    m_gfxChannel.purgeStaleFrames();
+}
