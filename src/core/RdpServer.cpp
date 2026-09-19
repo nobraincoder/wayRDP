@@ -1213,8 +1213,33 @@ void RdpServer::onKlipperClipboardHistoryUpdated()
     if (klipper.isValid()) {
         QDBusReply<QString> reply = klipper.call("getClipboardContents");
         if (reply.isValid()) {
-            QString text = reply.value();
-            if (!text.isEmpty()) {
+            QString text = reply.value().trimmed();
+            if (text.isEmpty()) return;
+
+            QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            QStringList files;
+            bool allFiles = true;
+
+            for (QString line : lines) {
+                line = line.trimmed();
+                if (line.startsWith(QLatin1String("file://"))) {
+                    QString path = QUrl(line).toLocalFile();
+                    if (!path.isEmpty() && QFileInfo::exists(path)) {
+                        files.append(path);
+                        continue;
+                    }
+                } else if (line.startsWith(QLatin1Char('/')) && QFileInfo::exists(line)) {
+                    files.append(line);
+                    continue;
+                }
+                allFiles = false;
+                break;
+            }
+
+            if (allFiles && !files.isEmpty()) {
+                qInfo() << "Klipper contains files:" << files;
+                onHostClipboardFilesChanged(files);
+            } else {
                 onHostClipboardChanged(text);
             }
         }

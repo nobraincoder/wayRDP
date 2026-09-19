@@ -1,8 +1,11 @@
 #include "channels/RdpCliprdrChannel.h"
 #include <QDebug>
 #include <QDir>
+#include <QDirIterator>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QUrl>
 #include <algorithm>
 
 RdpCliprdrChannel::RdpCliprdrChannel(QObject *parent)
@@ -76,6 +79,7 @@ void RdpCliprdrChannel::close()
     }
     m_incomingFiles.clear();
     m_completedIncomingFilePaths.clear();
+    m_lastIncomingFiles.clear();
     m_outgoingFiles.clear();
     m_outgoingFgdData.clear();
     m_lastHostClipboardText.clear();
@@ -437,6 +441,10 @@ void RdpCliprdrChannel::startNextIncomingFile(CliprdrServerContext* context)
     // All files completed!
     if (!m_completedIncomingFilePaths.isEmpty()) {
         qInfo() << "CLIPRDR: All incoming files received (" << m_completedIncomingFilePaths.size() << "files):" << m_completedIncomingFilePaths;
+        {
+            QMutexLocker locker(&m_mutex);
+            m_lastIncomingFiles = m_completedIncomingFilePaths;
+        }
         emit clientFilesReceived(m_completedIncomingFilePaths);
         m_incomingFiles.clear();
         m_completedIncomingFilePaths.clear();
@@ -476,16 +484,31 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_request(CliprdrServerContex
     }
 
     if (fileContentsRequest->dwFlags & FILECONTENTS_SIZE) {
-        uint64_t fileSize = fi.size();
+        uint64_t fileSize = fi.isDir() ? 0 : fi.size();
         resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.cbRequested = sizeof(uint64_t);
-        resp.requestedData = reinterpret_cast<const BYTE*>(&fileSize);
-        context->ServerFileContentsResponse(context, &resp);
+        if (fileContentsRequest->cbRequested == sizeof(UINT32)) {
+            UINT32 sz32 = static_cast<UINT32>(fileSize);
+            resp.cbRequested = sizeof(UINT32);
+            resp.requestedData = reinterpret_cast<const BYTE*>(&sz32);
+            context->ServerFileContentsResponse(context, &resp);
+        } else {
+            resp.cbRequested = sizeof(uint64_t);
+            resp.requestedData = reinterpret_cast<const BYTE*>(&fileSize);
+            context->ServerFileContentsResponse(context, &resp);
+        }
         qInfo() << "CLIPRDR: Responded to FILECONTENTS_SIZE for file [" << fileContentsRequest->listIndex << "]:" << fileSize << "bytes";
         return CHANNEL_RC_OK;
     }
 
     if (fileContentsRequest->dwFlags & FILECONTENTS_RANGE) {
+        if (fi.isDir()) {
+            resp.common.msgFlags = CB_RESPONSE_OK;
+            resp.cbRequested = 0;
+            resp.requestedData = nullptr;
+            context->ServerFileContentsResponse(context, &resp);
+            return CHANNEL_RC_OK;
+        }
+
         QFile file(filePath);
         if (!file.open(QIODevice::ReadOnly)) {
             qWarning() << "CLIPRDR: Could not open file for reading:" << filePath;
@@ -614,10 +637,27 @@ UINT RdpCliprdrChannel::cliprdr_client_unlock_clipboard_data(CliprdrServerContex
 void RdpCliprdrChannel::onHostClipboardChanged(const QString &text)
 {
     QMutexLocker locker(&m_mutex);
+    if (!m_incomingFiles.isEmpty()) {
+        return;
+    }
+    if (!m_outgoingFiles.isEmpty()) {
+        QStringList paths = m_outgoingFiles;
+        QString pathsJoinedN = paths.join(QLatin1Char('\n'));
+        QString pathsJoinedRN = paths.join(QStringLiteral("\r\n"));
+        if (text == pathsJoinedN || text == pathsJoinedRN) {
+            return;
+        }
+        if (paths.size() == 1) {
+            if (text == paths.first() || text == QUrl::fromLocalFile(paths.first()).toString()) {
+                return;
+            }
+        }
+    }
     if (m_lastHostClipboardText == text && m_outgoingFiles.isEmpty()) return;
     m_lastHostClipboardText = text;
     m_outgoingFiles.clear();
     m_outgoingFgdData.clear();
+    m_lastIncomingFiles.clear();
 
     if (!m_context || !m_cliprdrReady) return;
 
@@ -641,20 +681,69 @@ void RdpCliprdrChannel::onHostClipboardChanged(const QString &text)
 
 void RdpCliprdrChannel::onHostClipboardFilesChanged(const QStringList &filePaths)
 {
-    QStringList validFiles;
+    struct OutgoingFileEntry {
+        QString fullPath;
+        QString relativePath;
+        bool isDirectory;
+        uint64_t fileSize;
+        QDateTime lastModified;
+    };
+
+    QList<OutgoingFileEntry> entries;
+    QStringList validRootFiles;
+
     for (const QString& path : filePaths) {
-        if (QFileInfo::exists(path)) {
-            validFiles.append(path);
+        QFileInfo fi(path);
+        if (!fi.exists()) continue;
+
+        validRootFiles.append(path);
+
+        OutgoingFileEntry entry;
+        entry.fullPath = path;
+        entry.relativePath = fi.fileName();
+        entry.isDirectory = fi.isDir();
+        entry.fileSize = fi.isDir() ? 0 : fi.size();
+        entry.lastModified = fi.lastModified();
+        entries.append(entry);
+
+        if (fi.isDir()) {
+            QDir rootDir(path);
+            QDirIterator it(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                it.next();
+                QFileInfo childFi = it.fileInfo();
+                QString rel = fi.fileName() + QLatin1Char('\\') + rootDir.relativeFilePath(childFi.absoluteFilePath());
+                rel.replace(QLatin1Char('/'), QLatin1Char('\\'));
+
+                OutgoingFileEntry childEntry;
+                childEntry.fullPath = childFi.absoluteFilePath();
+                childEntry.relativePath = rel;
+                childEntry.isDirectory = childFi.isDir();
+                childEntry.fileSize = childFi.isDir() ? 0 : childFi.size();
+                childEntry.lastModified = childFi.lastModified();
+                entries.append(childEntry);
+            }
         }
     }
 
-    if (validFiles.isEmpty()) return;
+    if (entries.isEmpty()) return;
 
     QMutexLocker locker(&m_mutex);
-    m_outgoingFiles = validFiles;
+    if (!m_incomingFiles.isEmpty()) return;
+
+    if (m_lastIncomingFiles == validRootFiles) return;
+
+    QStringList allFullPaths;
+    for (const auto& e : entries) {
+        allFullPaths.append(e.fullPath);
+    }
+    if (m_outgoingFiles == allFullPaths) return;
+
+    m_outgoingFiles = allFullPaths;
+    m_lastIncomingFiles.clear();
 
     // Build FileGroupDescriptorW payload
-    UINT32 cItems = validFiles.size();
+    UINT32 cItems = entries.size();
     size_t headerSize = sizeof(UINT32);
     size_t itemSize = sizeof(FILEDESCRIPTORW);
     size_t totalSize = headerSize + cItems * itemSize;
@@ -666,26 +755,35 @@ void RdpCliprdrChannel::onHostClipboardFilesChanged(const QStringList &filePaths
     *reinterpret_cast<UINT32*>(ptr) = cItems;
     ptr += headerSize;
 
-    for (int i = 0; i < validFiles.size(); i++) {
-        QFileInfo fi(validFiles[i]);
+    for (int i = 0; i < entries.size(); i++) {
+        const auto& item = entries[i];
         FILEDESCRIPTORW* fd = reinterpret_cast<FILEDESCRIPTORW*>(ptr + i * itemSize);
         fd->dwFlags = FD_FILESIZE | FD_WRITESTIME | FD_ATTRIBUTES;
-        fd->dwFileAttributes = 0x00000080; // FILE_ATTRIBUTE_NORMAL
-        uint64_t sz = fi.size();
-        fd->nFileSizeLow = (DWORD)(sz & 0xFFFFFFFF);
-        fd->nFileSizeHigh = (DWORD)(sz >> 32);
+        if (item.isDirectory) {
+            fd->dwFileAttributes = 0x00000010; // FILE_ATTRIBUTE_DIRECTORY
+            fd->nFileSizeLow = 0;
+            fd->nFileSizeHigh = 0;
+        } else {
+            fd->dwFileAttributes = 0x00000080; // FILE_ATTRIBUTE_NORMAL
+            fd->nFileSizeLow = (DWORD)(item.fileSize & 0xFFFFFFFF);
+            fd->nFileSizeHigh = (DWORD)(item.fileSize >> 32);
+        }
 
-        QString fileName = fi.fileName();
-        int copyLen = static_cast<int>(std::min<qsizetype>(fileName.length(), 259));
-        memcpy(fd->cFileName, fileName.utf16(), copyLen * sizeof(char16_t));
+        uint64_t mtimeMs = item.lastModified.toMSecsSinceEpoch();
+        uint64_t winTime = (mtimeMs + 11644473600000ULL) * 10000ULL;
+        fd->ftLastWriteTime.dwLowDateTime = (DWORD)(winTime & 0xFFFFFFFF);
+        fd->ftLastWriteTime.dwHighDateTime = (DWORD)(winTime >> 32);
+
+        int copyLen = static_cast<int>(std::min<qsizetype>(item.relativePath.length(), 259));
+        memcpy(fd->cFileName, item.relativePath.utf16(), copyLen * sizeof(char16_t));
         fd->cFileName[copyLen] = 0;
     }
 
-    m_lastHostClipboardText = validFiles.join("\n");
+    m_lastHostClipboardText = validRootFiles.join(QStringLiteral("\r\n"));
 
     if (!m_context || !m_cliprdrReady) return;
 
-    qInfo() << "CLIPRDR: Host clipboard files changed (" << validFiles.size() << "files), announcing ServerFormatList";
+    qInfo() << "CLIPRDR: Host clipboard files changed (" << entries.size() << "entries, root files:" << validRootFiles.size() << "), announcing ServerFormatList";
 
     CLIPRDR_FORMAT_LIST formatList;
     memset(&formatList, 0, sizeof(formatList));

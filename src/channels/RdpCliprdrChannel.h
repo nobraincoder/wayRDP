@@ -70,5 +70,6 @@ private:
     uint32_t m_currentIncomingFileIndex{0};
     uint32_t m_fileStreamId{0};
     QStringList m_completedIncomingFilePaths;
+    QStringList m_lastIncomingFiles;
     QString m_lastHostClipboardText;
 };
