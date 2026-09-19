@@ -36,6 +36,7 @@ struct MyPeerContext {
     bool activated;
     bool authenticated{false};
     bool isWindowsClient{false};
+    UINT16 highSurrogate{0};
 };
 
 class RdpServer : public QObject
@@ -118,6 +119,7 @@ public:
 
     RdpsndServerContext* m_rdpsndContext{nullptr};
     freerdp_peer* m_activePeer{nullptr};
+    HANDLE m_activePeerThread{nullptr};
     QMutex m_peerMutex;
     QMutex m_audioMutex;
     UINT16 m_audioTimestamp{0};

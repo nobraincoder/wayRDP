@@ -19,6 +19,7 @@
 struct QueuedVideoFrame {
     QByteArray data;
     bool isKeyFrame{false};
+    size_t hash{0};
 };
 
 class RdpGfxChannel : public QObject

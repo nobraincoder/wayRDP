@@ -232,15 +232,20 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
         qInfo() << "RdpGfxChannel: Received clean IDR keyframe after surface reset! Resuming video output.";
     }
 
+    const size_t frameHash = qHashBits(data.constData(), data.size());
+
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
 
         // Hot-path optimization: identical back-to-back frames are a common artifact when the
         // desktop is static or the encoder is briefly repeating the same frame. Dropping those
         // duplicates reduces queue pressure without affecting correctness.
+        // Fast hash and size comparison avoids expensive byte-by-byte memcmp on large video payloads under lock.
         if (!m_frameQueue.empty()) {
             const QueuedVideoFrame &last = m_frameQueue.back();
-            if (last.data == data && last.isKeyFrame == isKeyFrame) {
+            if (last.isKeyFrame == isKeyFrame &&
+                last.data.size() == data.size() &&
+                last.hash == frameHash) {
                 return;
             }
         }
@@ -256,7 +261,7 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
                        << "frames), cleared queue and requested IDR keyframe to resync stream";
             return;
         }
-        m_frameQueue.push_back({data, isKeyFrame});
+        m_frameQueue.push_back({data, isKeyFrame, frameHash});
     }
     m_frameQueueCond.notify_one();
 }

@@ -46,10 +46,10 @@ public slots:
     void sendKeyboardKeysym(int keysym, uint state) override;
 
 private slots:
-    void onCreateSessionResponse(uint code, const QVariantMap &results);
-    void onSelectDevicesResponse(uint code, const QVariantMap &results);
-    void onSelectSourcesResponse(uint code, const QVariantMap &results);
-    void onStartResponse(uint code, const QVariantMap &results);
+    void onCreateSessionResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
+    void onSelectDevicesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
+    void onSelectSourcesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
+    void onStartResponse(uint code, const QVariantMap &results, const QDBusMessage &msg);
 
 private:
     void setupVirtualDisplayResolution();

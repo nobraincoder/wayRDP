@@ -97,7 +97,7 @@ bool KWinVirtualDisplay::createDisplay(const QString& name, const QSize& size, d
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onCreateSessionResponse(uint,QVariantMap))
+        SLOT(onCreateSessionResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -113,7 +113,7 @@ bool KWinVirtualDisplay::createDisplay(const QString& name, const QSize& size, d
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onCreateSessionResponse(uint,QVariantMap))
+                SLOT(onCreateSessionResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -124,15 +124,21 @@ bool KWinVirtualDisplay::createDisplay(const QString& name, const QSize& size, d
     return true;
 }
 
-void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched CreateSession response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onCreateSessionResponse(uint,QVariantMap))
+        SLOT(onCreateSessionResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -184,7 +190,7 @@ void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &r
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectDevicesResponse(uint,QVariantMap))
+        SLOT(onSelectDevicesResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -200,7 +206,7 @@ void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &r
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onSelectDevicesResponse(uint,QVariantMap))
+                SLOT(onSelectDevicesResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -208,16 +214,22 @@ void KWinVirtualDisplay::onCreateSessionResponse(uint code, const QVariantMap &r
     });
 }
 
-void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
     Q_UNUSED(results);
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched SelectDevices response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectDevicesResponse(uint,QVariantMap))
+        SLOT(onSelectDevicesResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -252,7 +264,7 @@ void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &r
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectSourcesResponse(uint,QVariantMap))
+        SLOT(onSelectSourcesResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -268,7 +280,7 @@ void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &r
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onSelectSourcesResponse(uint,QVariantMap))
+                SLOT(onSelectSourcesResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -276,16 +288,22 @@ void KWinVirtualDisplay::onSelectDevicesResponse(uint code, const QVariantMap &r
     });
 }
 
-void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
     Q_UNUSED(results);
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched SelectSources response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onSelectSourcesResponse(uint,QVariantMap))
+        SLOT(onSelectSourcesResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -316,7 +334,7 @@ void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &r
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onStartResponse(uint,QVariantMap))
+        SLOT(onStartResponse(uint,QVariantMap,QDBusMessage))
     );
 
     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
@@ -332,7 +350,7 @@ void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &r
                 "org.freedesktop.portal.Request",
                 "Response",
                 this,
-                SLOT(onStartResponse(uint,QVariantMap))
+                SLOT(onStartResponse(uint,QVariantMap,QDBusMessage))
             );
             return;
         }
@@ -340,15 +358,21 @@ void KWinVirtualDisplay::onSelectSourcesResponse(uint code, const QVariantMap &r
     });
 }
 
-void KWinVirtualDisplay::onStartResponse(uint code, const QVariantMap &results)
+void KWinVirtualDisplay::onStartResponse(uint code, const QVariantMap &results, const QDBusMessage &msg)
 {
+    if (m_currentRequestPath.path().isEmpty() || msg.path() != m_currentRequestPath.path()) {
+        qWarning() << "Ignoring stale or mismatched Start response from path:" << msg.path()
+                   << "(expected:" << m_currentRequestPath.path() << ")";
+        return;
+    }
+
     QDBusConnection::sessionBus().disconnect(
         "org.freedesktop.portal.Desktop",
         QString(),
         "org.freedesktop.portal.Request",
         "Response",
         this,
-        SLOT(onStartResponse(uint,QVariantMap))
+        SLOT(onStartResponse(uint,QVariantMap,QDBusMessage))
     );
     m_currentRequestPath = QDBusObjectPath();
 
@@ -821,6 +845,14 @@ void KWinVirtualDisplay::setupVirtualDisplayResolution()
 void KWinVirtualDisplay::destroyDisplay()
 {
     if (!m_currentRequestPath.path().isEmpty()) {
+        QDBusMessage cancelMessage = QDBusMessage::createMethodCall(
+            "org.freedesktop.portal.Desktop",
+            m_currentRequestPath.path(),
+            "org.freedesktop.portal.Request",
+            "Close"
+        );
+        QDBusConnection::sessionBus().asyncCall(cancelMessage);
+
         QDBusConnection::sessionBus().disconnect(
             "org.freedesktop.portal.Desktop",
             QString(),
