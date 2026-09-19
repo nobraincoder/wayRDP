@@ -145,6 +145,15 @@ UINT RdpCliprdrChannel::cliprdr_client_format_list(CliprdrServerContext* context
     if (!context || !context->custom) return CHANNEL_RC_OK;
     auto* channel = static_cast<RdpCliprdrChannel*>(context->custom);
 
+    // Send ServerFormatListResponse acknowledging format list receipt (MS-RDPECLIP §3.1.5.2)
+    CLIPRDR_FORMAT_LIST_RESPONSE resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.common.msgType = CB_FORMAT_LIST_RESPONSE;
+    resp.common.msgFlags = CB_RESPONSE_OK;
+    context->ServerFormatListResponse(context, &resp);
+
+    if (!formatList) return CHANNEL_RC_OK;
+
     qInfo() << "CLIPRDR: Client advertised" << formatList->numFormats << "clipboard formats";
     channel->m_clientFileGroupDescriptorFormatId = 0;
     UINT32 requestedId = 0;
@@ -222,8 +231,12 @@ UINT RdpCliprdrChannel::cliprdr_client_format_data_request(CliprdrServerContext*
         QByteArray utf16;
         {
             QMutexLocker locker(&channel->m_mutex);
-            const ushort* utf16Data = channel->m_lastHostClipboardText.utf16();
-            int len = (channel->m_lastHostClipboardText.length() + 1) * sizeof(char16_t);
+            QString textToSend = channel->m_lastHostClipboardText;
+            if (!textToSend.contains(QStringLiteral("\r\n"))) {
+                textToSend.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+            }
+            const ushort* utf16Data = textToSend.utf16();
+            int len = (textToSend.length() + 1) * sizeof(char16_t);
             utf16 = QByteArray(reinterpret_cast<const char*>(utf16Data), len);
         }
         resp.common.msgFlags = CB_RESPONSE_OK;
@@ -260,7 +273,9 @@ UINT RdpCliprdrChannel::cliprdr_client_format_data_response(CliprdrServerContext
     qInfo() << "CLIPRDR: ClientFormatDataResponse, flags:" << formatDataResponse->common.msgFlags
             << "dataLen:" << formatDataResponse->common.dataLen;
 
-    if (!(formatDataResponse->common.msgFlags & CB_RESPONSE_OK) || formatDataResponse->common.dataLen == 0) {
+    if (!(formatDataResponse->common.msgFlags & CB_RESPONSE_OK) ||
+        formatDataResponse->common.dataLen == 0 ||
+        !formatDataResponse->requestedFormatData) {
         return CHANNEL_RC_OK;
     }
 
@@ -348,6 +363,7 @@ UINT RdpCliprdrChannel::cliprdr_client_format_data_response(CliprdrServerContext
     while (!text.isEmpty() && text.endsWith(QChar('\0'))) {
         text.chop(1);
     }
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     if (!text.isEmpty()) {
         qInfo() << "CLIPRDR: Received text from client (" << text.length() << "chars):" << text.left(40);
         {

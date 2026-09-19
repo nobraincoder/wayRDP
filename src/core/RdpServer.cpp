@@ -1207,6 +1207,20 @@ void RdpServer::onHostClipboardFilesChanged(const QStringList &filePaths)
     m_cliprdrChannel.onHostClipboardFilesChanged(filePaths);
 }
 
+void RdpServer::onKlipperClipboardHistoryUpdated()
+{
+    QDBusInterface klipper("org.kde.klipper", "/klipper", "org.kde.klipper.klipper", QDBusConnection::sessionBus());
+    if (klipper.isValid()) {
+        QDBusReply<QString> reply = klipper.call("getClipboardContents");
+        if (reply.isValid()) {
+            QString text = reply.value();
+            if (!text.isEmpty()) {
+                onHostClipboardChanged(text);
+            }
+        }
+    }
+}
+
 void RdpServer::checkNetworkAdaptation()
 {
     int64_t rtt = m_lastRttMs.load();

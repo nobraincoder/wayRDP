@@ -55,6 +55,7 @@ public slots:
     void sendAudioSamples(const QByteArray &data);
     void onHostClipboardChanged(const QString &text);
     void onHostClipboardFilesChanged(const QStringList &filePaths);
+    void onKlipperClipboardHistoryUpdated();
     void checkNetworkAdaptation();
     void updateCursorShape(const QImage &image, const QPoint &hotspot);
     void resetGraphicsSurface(UINT32 width, UINT32 height);

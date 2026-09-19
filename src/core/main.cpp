@@ -312,18 +312,28 @@ int main(int argc, char *argv[])
                      &audioController, &QtAudioController::stopAudioCapture);
 
 
-    // Wire Clipboard via KSystemClipboard (works reliably on Wayland without focused window)
+    // Wire Clipboard via KSystemClipboard & Klipper D-Bus
+    // On Wayland, background services without an active focused window are rejected from calling
+    // wl_data_device.set_selection directly. Setting clipboard contents via org.kde.klipper D-Bus
+    // uses Plasma's privileged compositor connection, ensuring text is placed on the host clipboard reliably.
     KSystemClipboard *sysClipboard = KSystemClipboard::instance();
-    if (sysClipboard) {
-        QObject::connect(&server, &RdpServer::clientClipboardReceived, [sysClipboard](const QString &text) {
-            qInfo() << "Applying received client clipboard text to KSystemClipboard:" << text.left(40);
+
+    QObject::connect(&server, &RdpServer::clientClipboardReceived, [sysClipboard](const QString &text) {
+        qInfo() << "Applying received client clipboard text:" << text.left(40);
+        QDBusInterface klipper("org.kde.klipper", "/klipper", "org.kde.klipper.klipper", QDBusConnection::sessionBus());
+        if (klipper.isValid()) {
+            klipper.call(QDBus::NoBlock, "setClipboardContents", text);
+        }
+        if (sysClipboard) {
             QMimeData *mime = new QMimeData();
             mime->setText(text);
             sysClipboard->setMimeData(mime, QClipboard::Clipboard);
-        });
+        }
+    });
 
-        QObject::connect(&server, &RdpServer::clientFilesReceived, [sysClipboard](const QStringList &filePaths) {
-            qInfo() << "Applying received client files to KSystemClipboard:" << filePaths;
+    QObject::connect(&server, &RdpServer::clientFilesReceived, [sysClipboard](const QStringList &filePaths) {
+        qInfo() << "Applying received client files to KSystemClipboard:" << filePaths;
+        if (sysClipboard) {
             QList<QUrl> urls;
             for (const QString &path : filePaths) {
                 urls.append(QUrl::fromLocalFile(path));
@@ -332,8 +342,10 @@ int main(int argc, char *argv[])
             mime->setUrls(urls);
             mime->setText(filePaths.join("\n"));
             sysClipboard->setMimeData(mime, QClipboard::Clipboard);
-        });
+        }
+    });
 
+    if (sysClipboard) {
         QObject::connect(sysClipboard, &KSystemClipboard::changed, [&server, sysClipboard](QClipboard::Mode mode) {
             if (mode == QClipboard::Clipboard) {
                 const QMimeData *mime = sysClipboard->mimeData(QClipboard::Clipboard);
@@ -358,6 +370,19 @@ int main(int argc, char *argv[])
             }
         });
     }
+
+    // Connect to Klipper's clipboardHistoryUpdated signal for host->client clipboard sync
+    QDBusConnection::sessionBus().connect(
+        "org.kde.klipper",
+        "/klipper",
+        "org.kde.klipper.klipper",
+        "clipboardHistoryUpdated",
+        &server,
+        SLOT(onKlipperClipboardHistoryUpdated())
+    );
+
+    // Initial sync from Klipper
+    server.onKlipperClipboardHistoryUpdated();
 
     int port = 3390;
     bool ok = false;
