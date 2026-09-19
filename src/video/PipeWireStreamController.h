@@ -59,12 +59,6 @@ private:
     QSize m_targetResolution;
     QSize m_currentStreamResolution;
 
-    // Dynamic Encoder Throughput Pacing (Machine-dependent adaptive pacing under motion)
-    QElapsedTimer m_motionBurstTimer;
-    int m_motionBurstPackets{0};
-    qint64 m_lastPacketTime{0};
-    bool m_autoAdaptedFps{false};
-
     QSize m_lastCursorSize;
     QPoint m_lastCursorHotspot;
 

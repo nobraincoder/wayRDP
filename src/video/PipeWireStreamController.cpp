@@ -2,8 +2,6 @@
 #include "video/CodecHooks.h"
 #include <QDebug>
 
-extern "C" bool Main_checkAndResetQueueSaturation(void);
-
 PipeWireStreamController::PipeWireStreamController(QObject *parent)
     : QObject(parent), m_stream(nullptr), m_framerate(60), m_quality(80), m_baseQuality(80), m_fpsFrameCount(0), m_lastFpsLogTime(0)
 {
@@ -130,18 +128,11 @@ void PipeWireStreamController::setQuality(int quality)
 
 void PipeWireStreamController::setTargetResolution(const QSize &size)
 {
-    if (m_targetResolution != size) {
-        m_autoAdaptedFps = false; // Re-evaluate encoder throughput on resolution change
-    }
     m_targetResolution = size;
 }
 
 void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize &size)
 {
-    m_autoAdaptedFps = false;
-    m_motionBurstTimer.restart();
-    m_motionBurstPackets = 0;
-    m_lastPacketTime = 0;
 
     qInfo() << "PipeWireStreamController: Starting encoding for nodeId:" << nodeId << "fd:" << fd << "size:" << size
             << "with fps:" << m_framerate << "quality:" << m_quality;
@@ -303,60 +294,6 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         if (m_stream) {
             m_stream->setMaxFramerate(m_activeFramerate);
         }
-    }
-
-    if (Main_checkAndResetQueueSaturation()) {
-        if (!qEnvironmentVariableIsSet("RDP_FPS") && m_framerate > 15) {
-            uint32_t lowerFps = std::max(15u, m_framerate - 5);
-            qWarning() << "PipeWireStreamController: Filter queue saturation detected! Immediately adapting framerate from"
-                       << m_framerate << "to" << lowerFps << "FPS to eliminate buffer lag and frame drops";
-            m_framerate = lowerFps;
-            m_activeFramerate = lowerFps;
-            if (m_stream && !m_isIdle) {
-                m_stream->setMaxFramerate(lowerFps);
-            }
-            CodecHooks_requestKeyframe();
-        }
-    }
-
-    qint64 now = m_fpsTimer.elapsed();
-    qint64 interPacketInterval = (m_lastPacketTime > 0) ? (now - m_lastPacketTime) : 0;
-    m_lastPacketTime = now;
-
-    // Dynamic Hardware Encoder Throughput Pacing:
-    // If the GPU encoder is capable (modern GPUs like RTX, Iris Xe, Arc, RDNA), it encodes at 50-60 FPS effortlessly.
-    // If the GPU is older or saturated (e.g. Skylake GT2 capping at ~18-22 FPS), continuing to request 60 FPS
-    // causes KPipeWire's filter queue to drop frames and accumulate buffer latency.
-    // We observe real-time packet generation intervals during motion: if sustained throughput is < 40 FPS,
-    // we rapidly adapt input framerate within 250ms to match the GPU's actual hardware capability.
-    if (interPacketInterval > 0 && interPacketInterval <= 120) {
-        m_motionBurstPackets++;
-        qint64 burstElapsed = m_motionBurstTimer.elapsed();
-        if (burstElapsed >= 250 && m_motionBurstPackets >= 4) {
-            double sustainedFps = (m_motionBurstPackets * 1000.0) / burstElapsed;
-            if (!m_autoAdaptedFps && !qEnvironmentVariableIsSet("RDP_FPS") && m_framerate >= 40) {
-                if (sustainedFps < 40.0 && sustainedFps >= 10.0) {
-                    m_autoAdaptedFps = true;
-                    uint32_t adaptedFps = qBound(15u, static_cast<uint32_t>(std::floor(sustainedFps)), 30u);
-                    qInfo() << "PipeWireStreamController: Hardware encoder throughput limit detected ("
-                            << QString::number(sustainedFps, 'f', 1)
-                            << "FPS sustained under motion vs" << m_framerate << "FPS target)."
-                            << "Dynamically pacing input framerate to" << adaptedFps
-                            << "FPS to eliminate buffer lag and frame drops on this GPU.";
-                    m_activeFramerate = adaptedFps;
-                    m_framerate = adaptedFps;
-                    if (m_stream && !m_isIdle) {
-                        m_stream->setMaxFramerate(adaptedFps);
-                    }
-                    CodecHooks_requestKeyframe();
-                }
-            }
-            m_motionBurstTimer.restart();
-            m_motionBurstPackets = 0;
-        }
-    } else {
-        m_motionBurstTimer.restart();
-        m_motionBurstPackets = 0;
     }
 
     // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)

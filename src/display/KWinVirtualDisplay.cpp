@@ -876,6 +876,11 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
     if (m_sessionPath.isEmpty() || !m_displayActive)
         return;
 
+    if (x == m_lastPointerX && y == m_lastPointerY)
+        return;
+
+    cancelPointerNudges();
+
     m_lastPointerX = x;
     m_lastPointerY = y;
 
@@ -946,39 +951,19 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
 
     // When releasing a mouse button (e.g. desktop area selection rubberband, dragging window/files,
     // closing dropdown menus), Plasma/apps tear down the overlay/selection box with an OpacityAnimator (~250ms).
-    // Guard against running pointer nudges when the screen is locked: nudging pointer position while
-    // kscreenlocker is active or fading re-triggers compositor updates on the dying lockscreen surface,
-    // causing obsolete lockscreen frames to flash over the unlocked desktop!
+    // Request an IDR keyframe right after the animation to ensure any lingering sub-pixel opacity ghosts
+    // are completely eliminated, without synthetic pointer movement that triggers KWin's shakecursor effect.
     if (state == 0 && !m_isScreenLocked) {
         cancelPointerNudges();
-        const double baseX = m_lastPointerX;
-        const double baseY = m_lastPointerY;
-        const double deltaX = (baseX + 1.0 < m_requestedSize.width()) ? 1.0 : -1.0;
-
-        const int nudgeDelays[] = {50, 120, 200, 300, 420, 550};
-        const bool nudgeShifts[] = {true, false, true, false, true, false};
-
-        for (size_t i = 0; i < sizeof(nudgeDelays) / sizeof(nudgeDelays[0]); ++i) {
-            int delay = nudgeDelays[i];
-            bool shift = nudgeShifts[i];
-            auto *timer = new QTimer(this);
-            timer->setSingleShot(true);
-            connect(timer, &QTimer::timeout, this, [this, timer, baseX, baseY, deltaX, shift, delay]() {
-                if (delay == 300) {
-                    // Right after Plasma's 250ms OpacityAnimator completes, request an IDR keyframe.
-                    // The 300ms nudge forces KWin to composite the clean desktop, and CodecHooks
-                    // ensures that frame is encoded as a pristine full-screen intra frame,
-                    // completely eliminating any lingering sub-pixel opacity ghosts.
-                    CodecHooks_requestKeyframe();
-                }
-                double targetX = shift ? (baseX + deltaX) : baseX;
-                sendPointerMotionAbsolute(targetX, baseY);
-                m_nudgeTimers.removeOne(timer);
-                timer->deleteLater();
-            });
-            m_nudgeTimers.append(timer);
-            timer->start(delay);
-        }
+        auto *timer = new QTimer(this);
+        timer->setSingleShot(true);
+        connect(timer, &QTimer::timeout, this, [this, timer]() {
+            CodecHooks_requestKeyframe();
+            m_nudgeTimers.removeOne(timer);
+            timer->deleteLater();
+        });
+        m_nudgeTimers.append(timer);
+        timer->start(280);
     } else if (state == 1) {
         cancelPointerNudges();
     }

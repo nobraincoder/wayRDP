@@ -25,25 +25,6 @@
 #include "video/CodecHooks.h"
 
 static int sigFd[2];
-static QtMessageHandler s_defaultLogHandler = nullptr;
-static std::atomic<bool> s_queueSaturated{false};
-
-extern "C" Q_DECL_EXPORT bool Main_checkAndResetQueueSaturation(void)
-{
-    return s_queueSaturated.exchange(false, std::memory_order_acq_rel);
-}
-
-static void wayrdpMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg)
-{
-    if (msg.contains(QLatin1String("Filter queue is full")) || msg.contains(QLatin1String("Encode queue is full"))) {
-        s_queueSaturated.store(true, std::memory_order_release);
-    }
-    if (s_defaultLogHandler) {
-        s_defaultLogHandler(type, context, msg);
-    } else {
-        fprintf(stderr, "%s\n", qPrintable(msg));
-    }
-}
 
 static void signalHandler(int)
 {
@@ -123,7 +104,6 @@ static void loadEnvironmentConfig()
 
 int main(int argc, char *argv[])
 {
-    s_defaultLogHandler = qInstallMessageHandler(wayrdpMessageHandler);
     loadEnvironmentConfig();
 
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
