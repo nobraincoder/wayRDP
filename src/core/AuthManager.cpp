@@ -14,13 +14,28 @@ struct PamUserData {
     QByteArray password;
 };
 
+static void freePamResponses(struct pam_response* resp, int count)
+{
+    if (!resp || count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        if (resp[i].resp) {
+            free(resp[i].resp);
+            resp[i].resp = nullptr;
+        }
+    }
+    free(resp);
+}
+
 static int pamConversation(int num_msg, const struct pam_message** msg,
-                           struct pam_response** resp, void* appdata_ptr)
+                            struct pam_response** resp, void* appdata_ptr)
 {
     if (num_msg <= 0 || !resp || !appdata_ptr) {
         return PAM_CONV_ERR;
     }
-    struct pam_response* reply = (struct pam_response*)calloc(num_msg, sizeof(struct pam_response));
+    struct pam_response* reply = static_cast<pam_response*>(calloc(num_msg, sizeof(struct pam_response)));
     if (!reply) return PAM_BUF_ERR;
 
     PamUserData* ud = static_cast<PamUserData*>(appdata_ptr);
@@ -61,7 +76,7 @@ void AuthManager::generateCertificate()
                                          << "-addext" << "basicConstraints=critical,CA:TRUE"
                                          << "-addext" << "subjectAltName=DNS:localhost,IP:127.0.0.1");
     proc.waitForFinished();
-    
+
     if (proc.exitCode() == 0) {
         qInfo() << "Successfully generated SSL certificates at" << certPath;
     } else {
@@ -115,7 +130,6 @@ bool AuthManager::authenticateUser(const QString& username, const QString& passw
 
     retval = pam_authenticate(pamh, 0);
     bool success = (retval == PAM_SUCCESS);
-
     if (success) {
         retval = pam_acct_mgmt(pamh, 0);
         success = (retval == PAM_SUCCESS);
