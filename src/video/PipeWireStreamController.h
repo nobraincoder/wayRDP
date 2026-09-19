@@ -68,6 +68,11 @@ private:
     bool m_isIdle{false};
     uint32_t m_activeFramerate{60};
     int m_idleTimeoutMs{30000};
+
+    // Per-controller state for screen-activity detection; avoid static state so multiple sessions
+    // do not share burst counters and incorrectly affect idle throttling.
+    int m_consecutiveActiveFrames{0};
+    qint64 m_lastPacketTimeMs{0};
 };
 
 #endif // PIPEWIRESTREAMCONTROLLER_H
