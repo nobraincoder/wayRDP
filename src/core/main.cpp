@@ -162,6 +162,14 @@ int main(int argc, char *argv[])
     }
 
     QGuiApplication app(argc, argv);
+    // Note: We intentionally identify as "org.kde.krdpserver" for desktopFileName and
+    // applicationName for seamless KDE Plasma integration:
+    // 1. Unattended / Headless Portal Authorization: xdg-desktop-portal-kde and XDG
+    //    PermissionStore have built-in trust and saved permissions for "org.kde.krdpserver"
+    //    (KDE's native RDP server daemon), avoiding interactive desktop prompt popups.
+    // 2. KWin Virtual Display Naming: KWin creates virtual outputs using the client
+    //    application ID (e.g. "Virtual-virtual-xdp-kde-org.kde.krdpserver-1"), which
+    //    KWinVirtualDisplay matches in kscreen-doctor for resolution and priority control.
     app.setDesktopFileName("org.kde.krdpserver");
     app.setApplicationName("org.kde.krdpserver");
     app.setApplicationDisplayName("wayRDP Server");
