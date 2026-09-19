@@ -38,6 +38,7 @@ public slots:
     void setScreenLocked(bool locked) override;
 
     void sendPointerMotionAbsolute(double x, double y) override;
+    void sendPointerMotion(double dx, double dy) override;
     void sendPointerButton(int button, uint state) override;
     void sendPointerAxis(double dx, double dy) override;
     void sendPointerAxisDiscrete(uint axis, int steps) override;
@@ -78,6 +79,11 @@ private:
     double m_accumulatedX{0.0};
     double m_accumulatedY{0.0};
     std::chrono::steady_clock::time_point m_lastAxisTime;
+    std::chrono::steady_clock::time_point m_lastDbusMotionTime{};
+
+    // Generation-based resolution debouncing
+    uint64_t m_resolutionGeneration{0};
+    QTimer *m_resolutionDebounceTimer{nullptr};
 
     // Screen lock state and nudge timer management
     bool m_isScreenLocked{false};

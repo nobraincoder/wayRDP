@@ -176,6 +176,25 @@ void EiConnection::sendPointerMotionAbsolute(double x, double y, const QSize &st
     ei_device_frame(pointerDevice->device(), ei_now(m_ei));
 }
 
+void EiConnection::sendPointerMotion(double dx, double dy)
+{
+    if (!m_ei || m_pointerDevices.empty()) {
+        return;
+    }
+
+    EisPointerDevice *pointerDevice = m_lastActivePointerDevice;
+    if (!pointerDevice || !ei_device_has_capability(pointerDevice->device(), EI_DEVICE_CAP_POINTER)) {
+        pointerDevice = findPointerDeviceWithCapability(EI_DEVICE_CAP_POINTER);
+    }
+    if (!pointerDevice) {
+        return;
+    }
+
+    m_lastActivePointerDevice = pointerDevice;
+    ei_device_pointer_motion(pointerDevice->device(), dx, dy);
+    ei_device_frame(pointerDevice->device(), ei_now(m_ei));
+}
+
 bool EiConnection::sendPointerButton(int button, uint state)
 {
     if (!m_ei) return false;
@@ -266,6 +285,7 @@ void EiConnection::processEisEvents()
             auto seat = ei_event_get_seat(event);
             qInfo() << "EiConnection: Seat added, requesting unified remote device...";
             ei_seat_bind_capabilities(seat,
+                                      EI_DEVICE_CAP_POINTER,
                                       EI_DEVICE_CAP_POINTER_ABSOLUTE,
                                       EI_DEVICE_CAP_BUTTON,
                                       EI_DEVICE_CAP_SCROLL,
@@ -276,6 +296,7 @@ void EiConnection::processEisEvents()
                                       NULL);
 #ifdef HAVE_LIBEI_TEXT
             ei_seat_request_device_with_capabilities(seat,
+                                                     EI_DEVICE_CAP_POINTER,
                                                      EI_DEVICE_CAP_POINTER_ABSOLUTE,
                                                      EI_DEVICE_CAP_BUTTON,
                                                      EI_DEVICE_CAP_SCROLL,
@@ -287,7 +308,8 @@ void EiConnection::processEisEvents()
         }
         case EI_EVENT_DEVICE_ADDED:
             qInfo() << "EiConnection: Device added by EIS:" << ei_device_get_name(device);
-            if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE) ||
+            if (ei_device_has_capability(device, EI_DEVICE_CAP_POINTER) ||
+                ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE) ||
                 ei_device_has_capability(device, EI_DEVICE_CAP_BUTTON) ||
                 ei_device_has_capability(device, EI_DEVICE_CAP_SCROLL)) {
                 m_pointerDevices.push_back(std::make_unique<EisPointerDevice>(device));

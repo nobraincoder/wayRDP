@@ -60,6 +60,7 @@ public:
     [[nodiscard]] bool hasKeyboard() const;
 
     void sendPointerMotionAbsolute(double x, double y, const QSize &streamSize, const QString &mappingId = QString());
+    void sendPointerMotion(double dx, double dy);
     bool sendPointerButton(int button, uint state);
     void sendPointerAxis(double dx, double dy);
     void sendPointerAxisDiscrete(uint axis, int steps);

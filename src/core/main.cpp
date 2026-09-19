@@ -240,6 +240,8 @@ int main(int argc, char *argv[])
 
     QObject::connect(&server, &RdpServer::pointerMotionAbsolute,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerMotionAbsolute);
+    QObject::connect(&server, &RdpServer::pointerMotion,
+                     virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerMotion);
     QObject::connect(&server, &RdpServer::pointerButton,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerButton);
     QObject::connect(&server, &RdpServer::pointerAxis,

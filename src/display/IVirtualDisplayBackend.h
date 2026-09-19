@@ -23,6 +23,7 @@ public slots:
     virtual void setScreenLocked(bool locked) { Q_UNUSED(locked); }
 
     virtual void sendPointerMotionAbsolute(double x, double y) = 0;
+    virtual void sendPointerMotion(double dx, double dy) = 0;
     virtual void sendPointerButton(int button, uint state) = 0;
     virtual void sendPointerAxis(double dx, double dy) = 0;
     virtual void sendPointerAxisDiscrete(uint axis, int steps) = 0;

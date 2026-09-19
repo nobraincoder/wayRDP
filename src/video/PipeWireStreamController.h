@@ -73,6 +73,9 @@ private:
     // do not share burst counters and incorrectly affect idle throttling.
     int m_consecutiveActiveFrames{0};
     qint64 m_lastPacketTimeMs{0};
+
+    // Per-controller state for transitional resolution mismatch drops
+    int m_mismatchDropCount{0};
 };
 
 #endif // PIPEWIRESTREAMCONTROLLER_H

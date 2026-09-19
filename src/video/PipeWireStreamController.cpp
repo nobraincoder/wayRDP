@@ -144,6 +144,7 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
     m_currentStreamResolution = QSize();
     m_consecutiveActiveFrames = 0;
     m_lastPacketTimeMs = 0;
+    m_mismatchDropCount = 0;
 
     m_lastActivityTimer.restart();
     m_isIdle = false;
@@ -226,6 +227,7 @@ void PipeWireStreamController::onStreamStopped()
     m_isIdle = false;
     m_consecutiveActiveFrames = 0;
     m_lastPacketTimeMs = 0;
+    m_mismatchDropCount = 0;
 
     if (m_stream) {
         qInfo() << "PipeWireStreamController: Stopping stream...";
@@ -267,18 +269,17 @@ void PipeWireStreamController::onStreamSizeChanged(const QSize &size)
 void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &packet)
 {
     const QByteArray &data = packet.data();
-    static int mismatchDropCount = 0;
     if (!m_targetResolution.isEmpty() && !m_currentStreamResolution.isEmpty() && !isResolutionMatching(m_currentStreamResolution, m_targetResolution)) {
-        if (mismatchDropCount++ < 15) {
+        if (m_mismatchDropCount++ < 15) {
             return;
         }
         qWarning() << "PipeWireStreamController: Host-side resolution change confirmed to"
                    << m_currentStreamResolution << "(was" << m_targetResolution << ")";
         m_targetResolution = m_currentStreamResolution;
-        mismatchDropCount = 0;
+        m_mismatchDropCount = 0;
         emit streamSizeChanged(m_targetResolution);
     } else {
-        mismatchDropCount = 0;
+        m_mismatchDropCount = 0;
     }
 
     qint64 nowMs = m_fpsTimer.elapsed();

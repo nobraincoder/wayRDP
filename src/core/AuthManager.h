@@ -11,6 +11,9 @@ public:
     // Authenticate user credentials via PAM (or bypass if RDP_NO_AUTH / RDP_PASSWORD set)
     static bool authenticateUser(const QString& username, const QString& password);
 
+    // Check if authentication bypass is enabled via RDP_NO_AUTH
+    static bool isNoAuthEnabled();
+
     // Prepare temporary NTLM SAM database file for Windows mstsc NLA authentication
     static QString setupSamDatabase();
 

@@ -333,10 +333,10 @@ bool RdpGfxChannel::hasInFlightCapacity()
     // stalls or artificially caps throughput to ~30 FPS on high-performance clients.
     int64_t rtt = m_lastRttMs.load();
     size_t maxInFlight = 16;
-    if (rtt > 50) {
-        maxInFlight = 20;
-    } else if (rtt > 100) {
+    if (rtt > 100) {
         maxInFlight = 24;
+    } else if (rtt > 50) {
+        maxInFlight = 20;
     }
 
     if (m_pendingFrames.size() < maxInFlight) {

@@ -68,6 +68,7 @@ signals:
     void requestedResolutionChanged(const QSize &resolution, double scale);
 
     void pointerMotionAbsolute(double x, double y);
+    void pointerMotion(double dx, double dy);
     void pointerButton(int button, uint state);
     void pointerAxis(double dx, double dy);
     void pointerAxisDiscrete(uint axis, int steps);
@@ -107,7 +108,7 @@ private:
     QString m_samFilePath;
     freerdp_listener* m_listener{nullptr};
     HANDLE m_listenerThread{nullptr};
-    bool m_running{false};
+    std::atomic<bool> m_running{false};
     std::atomic<bool> m_peerStopRequested{false};
 
 public:

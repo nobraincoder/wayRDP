@@ -84,10 +84,16 @@ void AuthManager::generateCertificate()
     }
 }
 
+bool AuthManager::isNoAuthEnabled()
+{
+    const QString env = qEnvironmentVariable("RDP_NO_AUTH").trimmed().toLower();
+    return (env == "1" || env == "true" || env == "yes");
+}
+
 bool AuthManager::authenticateUser(const QString& username, const QString& password)
 {
-    if (qEnvironmentVariable("RDP_NO_AUTH") == "1") {
-        qInfo() << "Authentication bypassed due to RDP_NO_AUTH=1";
+    if (isNoAuthEnabled()) {
+        qInfo() << "Authentication bypassed due to RDP_NO_AUTH";
         return true;
     }
 
@@ -147,7 +153,7 @@ bool AuthManager::authenticateUser(const QString& username, const QString& passw
 QString AuthManager::setupSamDatabase()
 {
     QString rdpPassword = qEnvironmentVariable("RDP_PASSWORD");
-    if (rdpPassword.isEmpty() || qEnvironmentVariable("RDP_NO_AUTH") == "1") {
+    if (rdpPassword.isEmpty() || isNoAuthEnabled()) {
         return QString();
     }
 
