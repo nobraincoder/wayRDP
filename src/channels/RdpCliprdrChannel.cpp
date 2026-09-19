@@ -38,7 +38,7 @@ bool RdpCliprdrChannel::initialize(HANDLE vcm, rdpContext* rdpcontext)
     cliprdr->useLongFormatNames = TRUE;
     cliprdr->streamFileClipEnabled = TRUE;
     cliprdr->fileClipNoFilePaths = TRUE;
-    cliprdr->canLockClipData = TRUE;
+    cliprdr->canLockClipData = FALSE;
 
     cliprdr->autoInitializationSequence = TRUE;
     cliprdr->ClientCapabilities = cliprdr_client_capabilities;
@@ -409,32 +409,9 @@ void RdpCliprdrChannel::startNextIncomingFile(CliprdrServerContext* context)
 
         item.requestedBytes = 0;
         item.receivedBytes = 0;
-        item.inFlightRequests.clear();
 
-        // Pipelining: Send up to 4 chunk requests in flight (256KB sliding window)
-        const size_t maxInFlight = 4;
-        while (item.inFlightRequests.size() < maxInFlight && item.requestedBytes < item.fileSize) {
-            uint64_t offset = item.requestedBytes;
-            uint64_t remaining = item.fileSize - item.requestedBytes;
-            UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
-
-            CLIPRDR_FILE_CONTENTS_REQUEST req;
-            memset(&req, 0, sizeof(req));
-            req.common.msgType = CB_FILECONTENTS_REQUEST;
-            req.streamId = ++m_fileStreamId;
-            req.listIndex = m_currentIncomingFileIndex;
-            req.dwFlags = FILECONTENTS_RANGE;
-            req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
-            req.nPositionHigh = (UINT32)(offset >> 32);
-            req.cbRequested = chunkSize;
-
-            item.inFlightRequests.insert(req.streamId, offset);
-            item.requestedBytes += chunkSize;
-
-            qInfo() << "CLIPRDR: Pipeline requesting chunk for file [" << m_currentIncomingFileIndex << "]"
-                    << item.fileName << "offset:" << offset << "size:" << req.cbRequested << "streamId:" << req.streamId;
-            context->ServerFileContentsRequest(context, &req);
-        }
+        m_fileStreamId++;
+        requestNextFileChunk(context);
         return;
     }
 
@@ -449,6 +426,36 @@ void RdpCliprdrChannel::startNextIncomingFile(CliprdrServerContext* context)
         m_incomingFiles.clear();
         m_completedIncomingFilePaths.clear();
     }
+}
+
+void RdpCliprdrChannel::requestNextFileChunk(CliprdrServerContext* context)
+{
+    if (m_currentIncomingFileIndex >= (uint32_t)m_incomingFiles.size()) return;
+    IncomingFileTransfer& item = m_incomingFiles[m_currentIncomingFileIndex];
+
+    if (item.receivedBytes >= item.fileSize) return;
+
+    uint64_t offset = item.receivedBytes;
+    uint64_t remaining = item.fileSize - item.receivedBytes;
+    UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
+
+    CLIPRDR_FILE_CONTENTS_REQUEST req;
+    memset(&req, 0, sizeof(req));
+    req.common.msgType = CB_FILECONTENTS_REQUEST;
+    req.streamId = m_fileStreamId;
+    req.listIndex = m_currentIncomingFileIndex;
+    req.dwFlags = FILECONTENTS_RANGE;
+    req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
+    req.nPositionHigh = (UINT32)(offset >> 32);
+    req.cbRequested = chunkSize;
+    req.haveClipDataId = FALSE;
+    req.clipDataId = 0;
+
+    item.requestedBytes = offset + chunkSize;
+
+    qInfo() << "CLIPRDR: Requesting chunk for file [" << m_currentIncomingFileIndex << "]"
+            << item.fileName << "offset:" << offset << "size:" << req.cbRequested << "streamId:" << req.streamId;
+    context->ServerFileContentsRequest(context, &req);
 }
 
 UINT RdpCliprdrChannel::cliprdr_client_file_contents_request(CliprdrServerContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest)
@@ -545,15 +552,16 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
     auto* channel = static_cast<RdpCliprdrChannel*>(context->custom);
 
     if (channel->m_currentIncomingFileIndex >= (uint32_t)channel->m_incomingFiles.size()) {
-        qWarning() << "CLIPRDR: Unexpected file contents response, no active file";
+        qWarning() << "CLIPRDR: Unexpected file contents response, no active file (streamId=" << fileContentsResponse->streamId << ")";
         return CHANNEL_RC_OK;
     }
 
     IncomingFileTransfer& item = channel->m_incomingFiles[channel->m_currentIncomingFileIndex];
 
     if (!(fileContentsResponse->common.msgFlags & CB_RESPONSE_OK)) {
-        qWarning() << "CLIPRDR: File contents response failed for file" << item.fileName;
-        item.inFlightRequests.clear();
+        qWarning() << "CLIPRDR: File contents response failed for file" << item.fileName
+                   << "flags:" << fileContentsResponse->common.msgFlags
+                   << "streamId:" << fileContentsResponse->streamId;
         if (item.localFile) {
             item.localFile->close();
             delete item.localFile;
@@ -564,15 +572,26 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
         return CHANNEL_RC_OK;
     }
 
-    uint64_t chunkOffset = item.receivedBytes;
-    auto it = item.inFlightRequests.find(fileContentsResponse->streamId);
-    if (it != item.inFlightRequests.end()) {
-        chunkOffset = it.value();
-        item.inFlightRequests.erase(it);
+    if (fileContentsResponse->streamId != channel->m_fileStreamId) {
+        qWarning() << "CLIPRDR: Stale or mismatched streamId:" << fileContentsResponse->streamId
+                   << "expected:" << channel->m_fileStreamId;
+        return CHANNEL_RC_OK;
     }
 
-    if (item.localFile && fileContentsResponse->cbRequested > 0 && fileContentsResponse->requestedData) {
-        item.localFile->seek(chunkOffset);
+    if (fileContentsResponse->cbRequested == 0 || !fileContentsResponse->requestedData) {
+        qWarning() << "CLIPRDR: Empty data in FileContentsResponse for file" << item.fileName;
+        if (item.localFile) {
+            item.localFile->close();
+            delete item.localFile;
+            item.localFile = nullptr;
+        }
+        channel->m_currentIncomingFileIndex++;
+        channel->startNextIncomingFile(context);
+        return CHANNEL_RC_OK;
+    }
+
+    if (item.localFile) {
+        item.localFile->seek(item.receivedBytes);
         qint64 written = item.localFile->write(reinterpret_cast<const char*>(fileContentsResponse->requestedData),
                                                fileContentsResponse->cbRequested);
         if (written > 0) {
@@ -583,7 +602,6 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
     if (item.receivedBytes >= item.fileSize) {
         // File is complete!
         qInfo() << "CLIPRDR: Completed transfer of file:" << item.localPath << "(" << item.receivedBytes << "bytes)";
-        item.inFlightRequests.clear();
         if (item.localFile) {
             item.localFile->close();
             delete item.localFile;
@@ -593,28 +611,8 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
         channel->m_currentIncomingFileIndex++;
         channel->startNextIncomingFile(context);
     } else {
-        // Replenish the pipeline: maintain up to 4 chunk requests in flight
-        const size_t maxInFlight = 4;
-        while (item.inFlightRequests.size() < maxInFlight && item.requestedBytes < item.fileSize) {
-            uint64_t offset = item.requestedBytes;
-            uint64_t remaining = item.fileSize - item.requestedBytes;
-            UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
-
-            CLIPRDR_FILE_CONTENTS_REQUEST req;
-            memset(&req, 0, sizeof(req));
-            req.common.msgType = CB_FILECONTENTS_REQUEST;
-            req.streamId = ++channel->m_fileStreamId;
-            req.listIndex = channel->m_currentIncomingFileIndex;
-            req.dwFlags = FILECONTENTS_RANGE;
-            req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
-            req.nPositionHigh = (UINT32)(offset >> 32);
-            req.cbRequested = chunkSize;
-
-            item.inFlightRequests.insert(req.streamId, offset);
-            item.requestedBytes += chunkSize;
-
-            context->ServerFileContentsRequest(context, &req);
-        }
+        // Request next chunk sequentially (stop-and-wait)
+        channel->requestNextFileChunk(context);
     }
 
     return CHANNEL_RC_OK;

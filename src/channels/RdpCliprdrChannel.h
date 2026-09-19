@@ -46,6 +46,7 @@ private:
     static UINT cliprdr_client_unlock_clipboard_data(CliprdrServerContext* context, const CLIPRDR_UNLOCK_CLIPBOARD_DATA* unlockClipboardData);
 
     void startNextIncomingFile(CliprdrServerContext* context);
+    void requestNextFileChunk(CliprdrServerContext* context);
 
     CliprdrServerContext* m_context{nullptr};
     mutable QMutex m_mutex;
@@ -64,7 +65,6 @@ private:
         uint64_t requestedBytes{0};
         uint64_t receivedBytes{0};
         QFile* localFile{nullptr};
-        QHash<uint32_t, uint64_t> inFlightRequests;
     };
     QList<IncomingFileTransfer> m_incomingFiles;
     uint32_t m_currentIncomingFileIndex{0};
