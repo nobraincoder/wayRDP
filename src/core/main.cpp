@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <QSocketNotifier>
+#include <QStandardPaths>
 #include <openssl/provider.h>
 #include "core/RdpServer.h"
 #include "display/IVirtualDisplayBackend.h"
@@ -21,6 +22,7 @@
 #include "video/PipeWireStreamController.h"
 #include "audio/QtAudioController.h"
 #include "session/SessionLifecycleController.h"
+#include "video/CodecHooks.h"
 
 static int sigFd[2];
 
@@ -58,9 +60,13 @@ static void ensurePermissionsAuthorized()
 
 static void loadEnvironmentConfig()
 {
-    QString configPath = QDir::homePath() + "/.config/wayrdp.env";
+    QString configDir = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    if (configDir.isEmpty()) {
+        configDir = QDir::homePath() + "/.config";
+    }
+    QString configPath = configDir + "/wayrdp.env";
     if (!QFile::exists(configPath)) {
-        QString legacyPath = QDir::homePath() + "/.config/kde-virtual-rdp.env";
+        QString legacyPath = configDir + "/kde-virtual-rdp.env";
         if (QFile::exists(legacyPath)) {
             configPath = legacyPath;
         }
@@ -101,9 +107,21 @@ int main(int argc, char *argv[])
     loadEnvironmentConfig();
 
     if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
-        QString waylandSocket = QString("/run/user/%1/wayland-0").arg(getuid());
-        if (QFile::exists(waylandSocket)) {
+        QString runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
+        if (runtimeDir.isEmpty()) {
+            runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        }
+        if (runtimeDir.isEmpty()) {
+            runtimeDir = QString("/run/user/%1").arg(getuid());
+        }
+        if (QFile::exists(runtimeDir + "/wayland-0")) {
             qputenv("WAYLAND_DISPLAY", "wayland-0");
+        } else {
+            QDir dir(runtimeDir);
+            QStringList sockets = dir.entryList(QStringList() << "wayland-*", QDir::System | QDir::Files);
+            if (!sockets.isEmpty()) {
+                qputenv("WAYLAND_DISPLAY", sockets.first().toUtf8());
+            }
         }
     }
 
@@ -123,7 +141,25 @@ int main(int argc, char *argv[])
             qputenv("KPIPEWIRE_FORCE_ENCODER", encoder.toUtf8());
         }
     } else if (qEnvironmentVariableIsEmpty("KPIPEWIRE_FORCE_ENCODER")) {
-        qputenv("KPIPEWIRE_FORCE_ENCODER", "h264_vaapi");
+        // Automatically probe hardware acceleration availability
+        bool hasNvidia = (QFile::exists("/dev/nvidia0") || QFile::exists("/dev/nvidiactl"));
+        bool hasDri = false;
+        QDir driDir("/dev/dri");
+        if (driDir.exists()) {
+            const QStringList renders = driDir.entryList(QStringList() << "renderD*", QDir::System | QDir::Files);
+            hasDri = !renders.isEmpty();
+        }
+
+        if (hasNvidia) {
+            qInfo() << "Hardware auto-detection: Detected NVIDIA GPU node, selecting h264_nvenc";
+            qputenv("KPIPEWIRE_FORCE_ENCODER", "h264_nvenc");
+        } else if (hasDri) {
+            qInfo() << "Hardware auto-detection: Detected DRI render node, selecting h264_vaapi";
+            qputenv("KPIPEWIRE_FORCE_ENCODER", "h264_vaapi");
+        } else {
+            qInfo() << "Hardware auto-detection: No hardware encoder node detected, falling back to libx264";
+            qputenv("KPIPEWIRE_FORCE_ENCODER", "libx264");
+        }
     }
 
     QGuiApplication app(argc, argv);
@@ -156,8 +192,37 @@ int main(int argc, char *argv[])
     // Session lifecycle (Sleep inhibit during active RDP session, optional auto-lock on disconnect)
     QObject::connect(&server, &RdpServer::clientConnected,
                      &lifecycleController, &SessionLifecycleController::onClientConnected);
+    QObject::connect(&server, &RdpServer::clientConnected,
+                     [&lifecycleController, &virtualDisplay]() {
+                         virtualDisplay->setScreenLocked(lifecycleController.isScreenLocked());
+                     });
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      &lifecycleController, &SessionLifecycleController::onClientDisconnected);
+
+    // Dynamic lock/unlock transitions (Purge stale queue and request fresh IDR keyframe to prevent flash)
+    QObject::connect(&lifecycleController, &SessionLifecycleController::sessionUnlocked,
+                     [&virtualDisplay, &streamController, &server]() {
+                         qInfo() << "Main: Session unlocked! Purging stale frames and requesting keyframe...";
+                         virtualDisplay->setScreenLocked(false);
+                         streamController.onClientActivity();
+                         CodecHooks_requestKeyframe();
+                         server.purgeStaleFrames();
+                         // KScreenLocker teardown takes 150-250ms for KWin to finish compositing the unlocked desktop.
+                         // Schedule a second purge and keyframe request after 250ms to ensure the clean desktop is transmitted
+                         // and eradicate any lingering lockscreen frame from the hardware encoder pipeline.
+                         QTimer::singleShot(250, &server, [&server, &streamController]() {
+                             qInfo() << "Main: Post-unlock stabilization timer fired: requesting clean desktop keyframe";
+                             streamController.onClientActivity();
+                             server.purgeStaleFrames();
+                             CodecHooks_requestKeyframe();
+                         });
+                     });
+    QObject::connect(&lifecycleController, &SessionLifecycleController::sessionLocked,
+                     [&virtualDisplay, &server]() {
+                         qInfo() << "Main: Session locked! Updating display lock status and purging frames...";
+                         virtualDisplay->setScreenLocked(true);
+                         server.purgeStaleFrames();
+                     });
 
     // Idle power saver (Dynamic FPS throttling when no input activity from client)
     QObject::connect(&server, &RdpServer::clientActivity,
@@ -227,18 +292,28 @@ int main(int argc, char *argv[])
                      &audioController, &QtAudioController::stopAudioCapture);
 
 
-    // Wire Clipboard via KSystemClipboard (works reliably on Wayland without focused window)
+    // Wire Clipboard via KSystemClipboard & Klipper D-Bus
+    // On Wayland, background services without an active focused window are rejected from calling
+    // wl_data_device.set_selection directly. Setting clipboard contents via org.kde.klipper D-Bus
+    // uses Plasma's privileged compositor connection, ensuring text is placed on the host clipboard reliably.
     KSystemClipboard *sysClipboard = KSystemClipboard::instance();
-    if (sysClipboard) {
-        QObject::connect(&server, &RdpServer::clientClipboardReceived, [sysClipboard](const QString &text) {
-            qInfo() << "Applying received client clipboard text to KSystemClipboard:" << text.left(40);
+
+    QObject::connect(&server, &RdpServer::clientClipboardReceived, [sysClipboard](const QString &text) {
+        qInfo() << "Applying received client clipboard text:" << text.left(40);
+        QDBusInterface klipper("org.kde.klipper", "/klipper", "org.kde.klipper.klipper", QDBusConnection::sessionBus());
+        if (klipper.isValid()) {
+            klipper.call(QDBus::NoBlock, "setClipboardContents", text);
+        }
+        if (sysClipboard) {
             QMimeData *mime = new QMimeData();
             mime->setText(text);
             sysClipboard->setMimeData(mime, QClipboard::Clipboard);
-        });
+        }
+    });
 
-        QObject::connect(&server, &RdpServer::clientFilesReceived, [sysClipboard](const QStringList &filePaths) {
-            qInfo() << "Applying received client files to KSystemClipboard:" << filePaths;
+    QObject::connect(&server, &RdpServer::clientFilesReceived, [sysClipboard](const QStringList &filePaths) {
+        qInfo() << "Applying received client files to KSystemClipboard:" << filePaths;
+        if (sysClipboard) {
             QList<QUrl> urls;
             for (const QString &path : filePaths) {
                 urls.append(QUrl::fromLocalFile(path));
@@ -247,8 +322,10 @@ int main(int argc, char *argv[])
             mime->setUrls(urls);
             mime->setText(filePaths.join("\n"));
             sysClipboard->setMimeData(mime, QClipboard::Clipboard);
-        });
+        }
+    });
 
+    if (sysClipboard) {
         QObject::connect(sysClipboard, &KSystemClipboard::changed, [&server, sysClipboard](QClipboard::Mode mode) {
             if (mode == QClipboard::Clipboard) {
                 const QMimeData *mime = sysClipboard->mimeData(QClipboard::Clipboard);
@@ -273,6 +350,19 @@ int main(int argc, char *argv[])
             }
         });
     }
+
+    // Connect to Klipper's clipboardHistoryUpdated signal for host->client clipboard sync
+    QDBusConnection::sessionBus().connect(
+        "org.kde.klipper",
+        "/klipper",
+        "org.kde.klipper.klipper",
+        "clipboardHistoryUpdated",
+        &server,
+        SLOT(onKlipperClipboardHistoryUpdated())
+    );
+
+    // Initial sync from Klipper
+    server.onKlipperClipboardHistoryUpdated();
 
     int port = 3390;
     bool ok = false;

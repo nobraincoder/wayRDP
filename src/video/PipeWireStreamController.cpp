@@ -1,4 +1,5 @@
 #include "video/PipeWireStreamController.h"
+#include "video/CodecHooks.h"
 #include <QDebug>
 
 PipeWireStreamController::PipeWireStreamController(QObject *parent)
@@ -10,6 +11,14 @@ PipeWireStreamController::PipeWireStreamController(QObject *parent)
         if (ok && envQuality >= 30 && envQuality <= 100) {
             m_quality = envQuality;
             m_baseQuality = envQuality;
+        }
+    }
+
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            m_framerate = envFps;
         }
     }
 
@@ -72,6 +81,14 @@ void PipeWireStreamController::updateEffectiveQuality()
 
 void PipeWireStreamController::setEncodingParameters(uint32_t fps, int quality)
 {
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            fps = envFps;
+        }
+    }
+
     m_activeFramerate = fps;
     if (!m_isIdle) {
         m_framerate = fps;
@@ -116,6 +133,7 @@ void PipeWireStreamController::setTargetResolution(const QSize &size)
 
 void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize &size)
 {
+
     qInfo() << "PipeWireStreamController: Starting encoding for nodeId:" << nodeId << "fd:" << fd << "size:" << size
             << "with fps:" << m_framerate << "quality:" << m_quality;
 
@@ -179,7 +197,17 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
 #endif
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
-    m_stream->setMaxPendingFrames(100);
+    // Bounded pending frames buffer: 32 frames (~533ms at 60 FPS) ensures ample buffer
+    // headroom for the hardware VA-API encoder pipeline during fast pointer and window dragging,
+    // eliminating "Filter queue is full" drops while avoiding excessive queue latency.
+    int maxPending = 32;
+    bool okPending = false;
+    int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
+    if (okPending && envPending >= 3) {
+        maxPending = envPending;
+    }
+    m_stream->setMaxPendingFrames(maxPending);
+    qInfo() << "PipeWireStreamController: Configured max pending encoder frames:" << maxPending;
 
     const auto suggested = m_stream->suggestedEncoders();
     qInfo() << "PipeWireStreamController: Video encoder configured with quality:" << m_quality << "% | Suggested encoders:" << suggested;
@@ -258,19 +286,32 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
         mismatchDropCount = 0;
     }
 
-    // Active screen updates (video, browsing, window motions) count as screen activity to prevent false idle throttling
+    // Active screen updates (video, browsing, window motions) count as screen activity to prevent false idle throttling.
+    // When throttled to 5 FPS, PipeWire may flush 1 residual frame during parameter renegotiation.
+    // Require rapid consecutive frames (< 150ms interval) to distinguish genuine screen animations
+    // from single residual renegotiation frames, preventing idle flapping.
+    static int s_consecutiveActive = 0;
+    static qint64 s_lastPacketTimeMs = 0;
+    qint64 nowMs = m_fpsTimer.elapsed();
+    if (s_lastPacketTimeMs > 0 && (nowMs - s_lastPacketTimeMs) <= 150) {
+        s_consecutiveActive++;
+    } else {
+        s_consecutiveActive = 0;
+    }
+    s_lastPacketTimeMs = nowMs;
+
     m_lastActivityTimer.restart();
-    if (m_isIdle) {
+    if (m_isIdle && s_consecutiveActive >= 2) {
         m_isIdle = false;
-        qInfo() << "PipeWireStreamController: Screen activity detected, restoring framerate to" << m_activeFramerate << "FPS";
+        s_consecutiveActive = 0;
+        qInfo() << "PipeWireStreamController: Screen animation detected, restoring framerate to" << m_activeFramerate << "FPS";
         if (m_stream) {
             m_stream->setMaxFramerate(m_activeFramerate);
         }
     }
 
     // Detect heavy screen motion (e.g. video playback, window animations, fast scrolling)
-    // Non-keyframe delta packets > 40KB at 60 FPS indicate heavy motion
-    if (!packet.isKeyFrame() && data.size() > 40 * 1024) {
+    if (m_motionQualityDelta > 0 && !packet.isKeyFrame() && data.size() > 40 * 1024) {
         onMotionActivity();
     }
 

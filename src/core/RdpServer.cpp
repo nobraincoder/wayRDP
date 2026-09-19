@@ -344,6 +344,21 @@ static UINT disp_monitor_layout(DispServerContext* context, const DISPLAY_CONTRO
             << "desktop scale:" << desktopScale << "effective scale:" << scale;
 
     server->m_clientScale = scale;
+
+    uint32_t maxFps = 60;
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            maxFps = envFps;
+        }
+    }
+    server->m_maxTargetFps = maxFps;
+    if (server->m_currentFps.load() > maxFps) {
+        server->m_currentFps = maxFps;
+        emit server->clientEncodingConfigured(maxFps, server->m_currentQuality.load());
+    }
+
     emit server->requestedResolutionChanged(monitorSize, scale);
 
     return CHANNEL_RC_OK;
@@ -847,6 +862,20 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
             break;
     }
 
+    uint32_t maxFps = 60;
+    if (qEnvironmentVariableIsSet("RDP_FPS")) {
+        bool ok = false;
+        int envFps = qEnvironmentVariableIntValue("RDP_FPS", &ok);
+        if (ok && envFps >= 10 && envFps <= 120) {
+            maxFps = envFps;
+            qInfo() << "Using user configured RDP_FPS:" << maxFps;
+        }
+    }
+
+    server->m_maxTargetFps = maxFps;
+    targetFps = std::min(targetFps, maxFps);
+    server->m_currentFps = targetFps;
+
     if (qEnvironmentVariableIsSet("RDP_QUALITY")) {
         bool ok = false;
         int envQuality = qEnvironmentVariableIntValue("RDP_QUALITY", &ok);
@@ -857,6 +886,7 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
     } else {
         targetQuality = 95;
     }
+    server->m_currentQuality = targetQuality;
 
     emit server->clientEncodingConfigured(targetFps, targetQuality);
     
@@ -968,6 +998,11 @@ void RdpServer::resetGraphicsSurface(UINT32 width, UINT32 height)
         }
     }
     m_gfxChannel.resetSurface(width, height);
+}
+
+void RdpServer::purgeStaleFrames()
+{
+    m_gfxChannel.purgeStaleFrames();
 }
 
 BOOL RdpServer::peerSynchronizeEvent(rdpInput* input, UINT32 flags)
@@ -1172,6 +1207,45 @@ void RdpServer::onHostClipboardFilesChanged(const QStringList &filePaths)
     m_cliprdrChannel.onHostClipboardFilesChanged(filePaths);
 }
 
+void RdpServer::onKlipperClipboardHistoryUpdated()
+{
+    QDBusInterface klipper("org.kde.klipper", "/klipper", "org.kde.klipper.klipper", QDBusConnection::sessionBus());
+    if (klipper.isValid()) {
+        QDBusReply<QString> reply = klipper.call("getClipboardContents");
+        if (reply.isValid()) {
+            QString text = reply.value().trimmed();
+            if (text.isEmpty()) return;
+
+            QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            QStringList files;
+            bool allFiles = true;
+
+            for (QString line : lines) {
+                line = line.trimmed();
+                if (line.startsWith(QLatin1String("file://"))) {
+                    QString path = QUrl(line).toLocalFile();
+                    if (!path.isEmpty() && QFileInfo::exists(path)) {
+                        files.append(path);
+                        continue;
+                    }
+                } else if (line.startsWith(QLatin1Char('/')) && QFileInfo::exists(line)) {
+                    files.append(line);
+                    continue;
+                }
+                allFiles = false;
+                break;
+            }
+
+            if (allFiles && !files.isEmpty()) {
+                qInfo() << "Klipper contains files:" << files;
+                onHostClipboardFilesChanged(files);
+            } else {
+                onHostClipboardChanged(text);
+            }
+        }
+    }
+}
+
 void RdpServer::checkNetworkAdaptation()
 {
     int64_t rtt = m_lastRttMs.load();
@@ -1206,6 +1280,15 @@ void RdpServer::checkNetworkAdaptation()
     } else {
         targetFps = 20;
         targetQuality = 50;
+    }
+
+    targetFps = std::min(targetFps, m_maxTargetFps.load());
+    if (qEnvironmentVariableIsSet("RDP_QUALITY")) {
+        bool ok = false;
+        int envQuality = qEnvironmentVariableIntValue("RDP_QUALITY", &ok);
+        if (ok && envQuality >= 10 && envQuality <= 100) {
+            targetQuality = envQuality;
+        }
     }
 
     if (targetFps != m_currentFps.load() || targetQuality != m_currentQuality.load()) {

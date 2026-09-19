@@ -197,6 +197,15 @@ RDP_QUALITY=95
 # CRITICAL: Setting this to quality/size will cause closing window frames to linger on static desktops.
 RDP_ENCODER_PREFERENCE=speed
 
+# Bounded Encoder Buffer Depth (default: 8, minimum: 3)
+# Limits pending frame queue depth to prevent buffer bloat and eliminate "Filter queue is full" drop storms.
+# RDP_MAX_PENDING_FRAMES=8
+
+# GOP Size / Intra Keyframe Period (default: 30)
+# Maximum distance (in frames) between full IDR keyframes (0.5s at 60 FPS) to guarantee prompt recovery
+# on unlock transitions, packet loss, or client decoder resynchronization.
+# RDP_GOP_SIZE=30
+
 # Idle Power Saver timeout in seconds (default: 30)
 # Automatically throttles video stream to 5 FPS after N seconds of no client input.
 # Resumes full 60 FPS instantly upon mouse movement or keypress. Set to 0 to disable.

@@ -13,6 +13,8 @@ SessionLifecycleController::SessionLifecycleController(QObject *parent)
         m_lockOnDisconnect = true;
         qInfo() << "SessionLifecycleController: Lock on disconnect enabled by default";
     }
+
+    setupScreenSaverListener();
 }
 
 SessionLifecycleController::~SessionLifecycleController()
@@ -104,3 +106,56 @@ void SessionLifecycleController::lockScreen()
         QProcess::startDetached("loginctl", QStringList() << "lock-session");
     }
 }
+
+void SessionLifecycleController::setupScreenSaverListener()
+{
+    // Query initial screen lock state
+    QDBusInterface screenSaver("org.freedesktop.ScreenSaver",
+                               "/ScreenSaver",
+                               "org.freedesktop.ScreenSaver",
+                               QDBusConnection::sessionBus());
+
+    if (screenSaver.isValid()) {
+        QDBusReply<bool> reply = screenSaver.call("GetActive");
+        if (reply.isValid()) {
+            m_isScreenLocked = reply.value();
+            qInfo() << "SessionLifecycleController: Initial screen lock status:"
+                    << (m_isScreenLocked ? "LOCKED" : "UNLOCKED");
+        }
+    }
+
+    // Connect to D-Bus ActiveChanged signal to detect screen lock/unlock transitions dynamically
+    bool connected = QDBusConnection::sessionBus().connect(
+        "org.freedesktop.ScreenSaver",
+        "/ScreenSaver",
+        "org.freedesktop.ScreenSaver",
+        "ActiveChanged",
+        this,
+        SLOT(onScreenSaverActiveChanged(bool))
+    );
+
+    if (connected) {
+        qInfo() << "SessionLifecycleController: Connected to org.freedesktop.ScreenSaver ActiveChanged signal";
+    } else {
+        qWarning() << "SessionLifecycleController: Failed to connect to org.freedesktop.ScreenSaver ActiveChanged signal";
+    }
+}
+
+void SessionLifecycleController::onScreenSaverActiveChanged(bool active)
+{
+    if (m_isScreenLocked == active) {
+        return;
+    }
+
+    m_isScreenLocked = active;
+    qInfo() << "SessionLifecycleController: Screen lock state transitioned to:"
+            << (active ? "LOCKED" : "UNLOCKED");
+
+    emit screenLockChanged(active);
+    if (active) {
+        emit sessionLocked();
+    } else {
+        emit sessionUnlocked();
+    }
+}
+

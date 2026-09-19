@@ -20,6 +20,7 @@ public slots:
     virtual void onClientConnected(const QSize &resolution, double scale) = 0;
     virtual void onClientDisconnected() = 0;
     virtual void changeResolution(const QSize &newSize, double scale = 1.0) = 0;
+    virtual void setScreenLocked(bool locked) { Q_UNUSED(locked); }
 
     virtual void sendPointerMotionAbsolute(double x, double y) = 0;
     virtual void sendPointerButton(int button, uint state) = 0;

@@ -1,8 +1,11 @@
 #include "channels/RdpCliprdrChannel.h"
 #include <QDebug>
 #include <QDir>
+#include <QDirIterator>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QUrl>
 #include <algorithm>
 
 RdpCliprdrChannel::RdpCliprdrChannel(QObject *parent)
@@ -35,7 +38,7 @@ bool RdpCliprdrChannel::initialize(HANDLE vcm, rdpContext* rdpcontext)
     cliprdr->useLongFormatNames = TRUE;
     cliprdr->streamFileClipEnabled = TRUE;
     cliprdr->fileClipNoFilePaths = TRUE;
-    cliprdr->canLockClipData = TRUE;
+    cliprdr->canLockClipData = FALSE;
 
     cliprdr->autoInitializationSequence = TRUE;
     cliprdr->ClientCapabilities = cliprdr_client_capabilities;
@@ -76,6 +79,7 @@ void RdpCliprdrChannel::close()
     }
     m_incomingFiles.clear();
     m_completedIncomingFilePaths.clear();
+    m_lastIncomingFiles.clear();
     m_outgoingFiles.clear();
     m_outgoingFgdData.clear();
     m_lastHostClipboardText.clear();
@@ -144,6 +148,15 @@ UINT RdpCliprdrChannel::cliprdr_client_format_list(CliprdrServerContext* context
 {
     if (!context || !context->custom) return CHANNEL_RC_OK;
     auto* channel = static_cast<RdpCliprdrChannel*>(context->custom);
+
+    // Send ServerFormatListResponse acknowledging format list receipt (MS-RDPECLIP §3.1.5.2)
+    CLIPRDR_FORMAT_LIST_RESPONSE resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.common.msgType = CB_FORMAT_LIST_RESPONSE;
+    resp.common.msgFlags = CB_RESPONSE_OK;
+    context->ServerFormatListResponse(context, &resp);
+
+    if (!formatList) return CHANNEL_RC_OK;
 
     qInfo() << "CLIPRDR: Client advertised" << formatList->numFormats << "clipboard formats";
     channel->m_clientFileGroupDescriptorFormatId = 0;
@@ -222,8 +235,12 @@ UINT RdpCliprdrChannel::cliprdr_client_format_data_request(CliprdrServerContext*
         QByteArray utf16;
         {
             QMutexLocker locker(&channel->m_mutex);
-            const ushort* utf16Data = channel->m_lastHostClipboardText.utf16();
-            int len = (channel->m_lastHostClipboardText.length() + 1) * sizeof(char16_t);
+            QString textToSend = channel->m_lastHostClipboardText;
+            if (!textToSend.contains(QStringLiteral("\r\n"))) {
+                textToSend.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+            }
+            const ushort* utf16Data = textToSend.utf16();
+            int len = (textToSend.length() + 1) * sizeof(char16_t);
             utf16 = QByteArray(reinterpret_cast<const char*>(utf16Data), len);
         }
         resp.common.msgFlags = CB_RESPONSE_OK;
@@ -260,7 +277,9 @@ UINT RdpCliprdrChannel::cliprdr_client_format_data_response(CliprdrServerContext
     qInfo() << "CLIPRDR: ClientFormatDataResponse, flags:" << formatDataResponse->common.msgFlags
             << "dataLen:" << formatDataResponse->common.dataLen;
 
-    if (!(formatDataResponse->common.msgFlags & CB_RESPONSE_OK) || formatDataResponse->common.dataLen == 0) {
+    if (!(formatDataResponse->common.msgFlags & CB_RESPONSE_OK) ||
+        formatDataResponse->common.dataLen == 0 ||
+        !formatDataResponse->requestedFormatData) {
         return CHANNEL_RC_OK;
     }
 
@@ -348,6 +367,7 @@ UINT RdpCliprdrChannel::cliprdr_client_format_data_response(CliprdrServerContext
     while (!text.isEmpty() && text.endsWith(QChar('\0'))) {
         text.chop(1);
     }
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     if (!text.isEmpty()) {
         qInfo() << "CLIPRDR: Received text from client (" << text.length() << "chars):" << text.left(40);
         {
@@ -389,42 +409,53 @@ void RdpCliprdrChannel::startNextIncomingFile(CliprdrServerContext* context)
 
         item.requestedBytes = 0;
         item.receivedBytes = 0;
-        item.inFlightRequests.clear();
 
-        // Pipelining: Send up to 4 chunk requests in flight (256KB sliding window)
-        const size_t maxInFlight = 4;
-        while (item.inFlightRequests.size() < maxInFlight && item.requestedBytes < item.fileSize) {
-            uint64_t offset = item.requestedBytes;
-            uint64_t remaining = item.fileSize - item.requestedBytes;
-            UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
-
-            CLIPRDR_FILE_CONTENTS_REQUEST req;
-            memset(&req, 0, sizeof(req));
-            req.common.msgType = CB_FILECONTENTS_REQUEST;
-            req.streamId = ++m_fileStreamId;
-            req.listIndex = m_currentIncomingFileIndex;
-            req.dwFlags = FILECONTENTS_RANGE;
-            req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
-            req.nPositionHigh = (UINT32)(offset >> 32);
-            req.cbRequested = chunkSize;
-
-            item.inFlightRequests.insert(req.streamId, offset);
-            item.requestedBytes += chunkSize;
-
-            qInfo() << "CLIPRDR: Pipeline requesting chunk for file [" << m_currentIncomingFileIndex << "]"
-                    << item.fileName << "offset:" << offset << "size:" << req.cbRequested << "streamId:" << req.streamId;
-            context->ServerFileContentsRequest(context, &req);
-        }
+        m_fileStreamId++;
+        requestNextFileChunk(context);
         return;
     }
 
     // All files completed!
     if (!m_completedIncomingFilePaths.isEmpty()) {
         qInfo() << "CLIPRDR: All incoming files received (" << m_completedIncomingFilePaths.size() << "files):" << m_completedIncomingFilePaths;
+        {
+            QMutexLocker locker(&m_mutex);
+            m_lastIncomingFiles = m_completedIncomingFilePaths;
+        }
         emit clientFilesReceived(m_completedIncomingFilePaths);
         m_incomingFiles.clear();
         m_completedIncomingFilePaths.clear();
     }
+}
+
+void RdpCliprdrChannel::requestNextFileChunk(CliprdrServerContext* context)
+{
+    if (m_currentIncomingFileIndex >= (uint32_t)m_incomingFiles.size()) return;
+    IncomingFileTransfer& item = m_incomingFiles[m_currentIncomingFileIndex];
+
+    if (item.receivedBytes >= item.fileSize) return;
+
+    uint64_t offset = item.receivedBytes;
+    uint64_t remaining = item.fileSize - item.receivedBytes;
+    UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
+
+    CLIPRDR_FILE_CONTENTS_REQUEST req;
+    memset(&req, 0, sizeof(req));
+    req.common.msgType = CB_FILECONTENTS_REQUEST;
+    req.streamId = m_fileStreamId;
+    req.listIndex = m_currentIncomingFileIndex;
+    req.dwFlags = FILECONTENTS_RANGE;
+    req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
+    req.nPositionHigh = (UINT32)(offset >> 32);
+    req.cbRequested = chunkSize;
+    req.haveClipDataId = FALSE;
+    req.clipDataId = 0;
+
+    item.requestedBytes = offset + chunkSize;
+
+    qInfo() << "CLIPRDR: Requesting chunk for file [" << m_currentIncomingFileIndex << "]"
+            << item.fileName << "offset:" << offset << "size:" << req.cbRequested << "streamId:" << req.streamId;
+    context->ServerFileContentsRequest(context, &req);
 }
 
 UINT RdpCliprdrChannel::cliprdr_client_file_contents_request(CliprdrServerContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest)
@@ -460,16 +491,31 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_request(CliprdrServerContex
     }
 
     if (fileContentsRequest->dwFlags & FILECONTENTS_SIZE) {
-        uint64_t fileSize = fi.size();
+        uint64_t fileSize = fi.isDir() ? 0 : fi.size();
         resp.common.msgFlags = CB_RESPONSE_OK;
-        resp.cbRequested = sizeof(uint64_t);
-        resp.requestedData = reinterpret_cast<const BYTE*>(&fileSize);
-        context->ServerFileContentsResponse(context, &resp);
+        if (fileContentsRequest->cbRequested == sizeof(UINT32)) {
+            UINT32 sz32 = static_cast<UINT32>(fileSize);
+            resp.cbRequested = sizeof(UINT32);
+            resp.requestedData = reinterpret_cast<const BYTE*>(&sz32);
+            context->ServerFileContentsResponse(context, &resp);
+        } else {
+            resp.cbRequested = sizeof(uint64_t);
+            resp.requestedData = reinterpret_cast<const BYTE*>(&fileSize);
+            context->ServerFileContentsResponse(context, &resp);
+        }
         qInfo() << "CLIPRDR: Responded to FILECONTENTS_SIZE for file [" << fileContentsRequest->listIndex << "]:" << fileSize << "bytes";
         return CHANNEL_RC_OK;
     }
 
     if (fileContentsRequest->dwFlags & FILECONTENTS_RANGE) {
+        if (fi.isDir()) {
+            resp.common.msgFlags = CB_RESPONSE_OK;
+            resp.cbRequested = 0;
+            resp.requestedData = nullptr;
+            context->ServerFileContentsResponse(context, &resp);
+            return CHANNEL_RC_OK;
+        }
+
         QFile file(filePath);
         if (!file.open(QIODevice::ReadOnly)) {
             qWarning() << "CLIPRDR: Could not open file for reading:" << filePath;
@@ -506,15 +552,16 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
     auto* channel = static_cast<RdpCliprdrChannel*>(context->custom);
 
     if (channel->m_currentIncomingFileIndex >= (uint32_t)channel->m_incomingFiles.size()) {
-        qWarning() << "CLIPRDR: Unexpected file contents response, no active file";
+        qWarning() << "CLIPRDR: Unexpected file contents response, no active file (streamId=" << fileContentsResponse->streamId << ")";
         return CHANNEL_RC_OK;
     }
 
     IncomingFileTransfer& item = channel->m_incomingFiles[channel->m_currentIncomingFileIndex];
 
     if (!(fileContentsResponse->common.msgFlags & CB_RESPONSE_OK)) {
-        qWarning() << "CLIPRDR: File contents response failed for file" << item.fileName;
-        item.inFlightRequests.clear();
+        qWarning() << "CLIPRDR: File contents response failed for file" << item.fileName
+                   << "flags:" << fileContentsResponse->common.msgFlags
+                   << "streamId:" << fileContentsResponse->streamId;
         if (item.localFile) {
             item.localFile->close();
             delete item.localFile;
@@ -525,15 +572,26 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
         return CHANNEL_RC_OK;
     }
 
-    uint64_t chunkOffset = item.receivedBytes;
-    auto it = item.inFlightRequests.find(fileContentsResponse->streamId);
-    if (it != item.inFlightRequests.end()) {
-        chunkOffset = it.value();
-        item.inFlightRequests.erase(it);
+    if (fileContentsResponse->streamId != channel->m_fileStreamId) {
+        qWarning() << "CLIPRDR: Stale or mismatched streamId:" << fileContentsResponse->streamId
+                   << "expected:" << channel->m_fileStreamId;
+        return CHANNEL_RC_OK;
     }
 
-    if (item.localFile && fileContentsResponse->cbRequested > 0 && fileContentsResponse->requestedData) {
-        item.localFile->seek(chunkOffset);
+    if (fileContentsResponse->cbRequested == 0 || !fileContentsResponse->requestedData) {
+        qWarning() << "CLIPRDR: Empty data in FileContentsResponse for file" << item.fileName;
+        if (item.localFile) {
+            item.localFile->close();
+            delete item.localFile;
+            item.localFile = nullptr;
+        }
+        channel->m_currentIncomingFileIndex++;
+        channel->startNextIncomingFile(context);
+        return CHANNEL_RC_OK;
+    }
+
+    if (item.localFile) {
+        item.localFile->seek(item.receivedBytes);
         qint64 written = item.localFile->write(reinterpret_cast<const char*>(fileContentsResponse->requestedData),
                                                fileContentsResponse->cbRequested);
         if (written > 0) {
@@ -544,7 +602,6 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
     if (item.receivedBytes >= item.fileSize) {
         // File is complete!
         qInfo() << "CLIPRDR: Completed transfer of file:" << item.localPath << "(" << item.receivedBytes << "bytes)";
-        item.inFlightRequests.clear();
         if (item.localFile) {
             item.localFile->close();
             delete item.localFile;
@@ -554,28 +611,8 @@ UINT RdpCliprdrChannel::cliprdr_client_file_contents_response(CliprdrServerConte
         channel->m_currentIncomingFileIndex++;
         channel->startNextIncomingFile(context);
     } else {
-        // Replenish the pipeline: maintain up to 4 chunk requests in flight
-        const size_t maxInFlight = 4;
-        while (item.inFlightRequests.size() < maxInFlight && item.requestedBytes < item.fileSize) {
-            uint64_t offset = item.requestedBytes;
-            uint64_t remaining = item.fileSize - item.requestedBytes;
-            UINT32 chunkSize = (UINT32)std::min((uint64_t)65536, remaining);
-
-            CLIPRDR_FILE_CONTENTS_REQUEST req;
-            memset(&req, 0, sizeof(req));
-            req.common.msgType = CB_FILECONTENTS_REQUEST;
-            req.streamId = ++channel->m_fileStreamId;
-            req.listIndex = channel->m_currentIncomingFileIndex;
-            req.dwFlags = FILECONTENTS_RANGE;
-            req.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
-            req.nPositionHigh = (UINT32)(offset >> 32);
-            req.cbRequested = chunkSize;
-
-            item.inFlightRequests.insert(req.streamId, offset);
-            item.requestedBytes += chunkSize;
-
-            context->ServerFileContentsRequest(context, &req);
-        }
+        // Request next chunk sequentially (stop-and-wait)
+        channel->requestNextFileChunk(context);
     }
 
     return CHANNEL_RC_OK;
@@ -598,10 +635,27 @@ UINT RdpCliprdrChannel::cliprdr_client_unlock_clipboard_data(CliprdrServerContex
 void RdpCliprdrChannel::onHostClipboardChanged(const QString &text)
 {
     QMutexLocker locker(&m_mutex);
+    if (!m_incomingFiles.isEmpty()) {
+        return;
+    }
+    if (!m_outgoingFiles.isEmpty()) {
+        QStringList paths = m_outgoingFiles;
+        QString pathsJoinedN = paths.join(QLatin1Char('\n'));
+        QString pathsJoinedRN = paths.join(QStringLiteral("\r\n"));
+        if (text == pathsJoinedN || text == pathsJoinedRN) {
+            return;
+        }
+        if (paths.size() == 1) {
+            if (text == paths.first() || text == QUrl::fromLocalFile(paths.first()).toString()) {
+                return;
+            }
+        }
+    }
     if (m_lastHostClipboardText == text && m_outgoingFiles.isEmpty()) return;
     m_lastHostClipboardText = text;
     m_outgoingFiles.clear();
     m_outgoingFgdData.clear();
+    m_lastIncomingFiles.clear();
 
     if (!m_context || !m_cliprdrReady) return;
 
@@ -625,20 +679,69 @@ void RdpCliprdrChannel::onHostClipboardChanged(const QString &text)
 
 void RdpCliprdrChannel::onHostClipboardFilesChanged(const QStringList &filePaths)
 {
-    QStringList validFiles;
+    struct OutgoingFileEntry {
+        QString fullPath;
+        QString relativePath;
+        bool isDirectory;
+        uint64_t fileSize;
+        QDateTime lastModified;
+    };
+
+    QList<OutgoingFileEntry> entries;
+    QStringList validRootFiles;
+
     for (const QString& path : filePaths) {
-        if (QFileInfo::exists(path)) {
-            validFiles.append(path);
+        QFileInfo fi(path);
+        if (!fi.exists()) continue;
+
+        validRootFiles.append(path);
+
+        OutgoingFileEntry entry;
+        entry.fullPath = path;
+        entry.relativePath = fi.fileName();
+        entry.isDirectory = fi.isDir();
+        entry.fileSize = fi.isDir() ? 0 : fi.size();
+        entry.lastModified = fi.lastModified();
+        entries.append(entry);
+
+        if (fi.isDir()) {
+            QDir rootDir(path);
+            QDirIterator it(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                it.next();
+                QFileInfo childFi = it.fileInfo();
+                QString rel = fi.fileName() + QLatin1Char('\\') + rootDir.relativeFilePath(childFi.absoluteFilePath());
+                rel.replace(QLatin1Char('/'), QLatin1Char('\\'));
+
+                OutgoingFileEntry childEntry;
+                childEntry.fullPath = childFi.absoluteFilePath();
+                childEntry.relativePath = rel;
+                childEntry.isDirectory = childFi.isDir();
+                childEntry.fileSize = childFi.isDir() ? 0 : childFi.size();
+                childEntry.lastModified = childFi.lastModified();
+                entries.append(childEntry);
+            }
         }
     }
 
-    if (validFiles.isEmpty()) return;
+    if (entries.isEmpty()) return;
 
     QMutexLocker locker(&m_mutex);
-    m_outgoingFiles = validFiles;
+    if (!m_incomingFiles.isEmpty()) return;
+
+    if (m_lastIncomingFiles == validRootFiles) return;
+
+    QStringList allFullPaths;
+    for (const auto& e : entries) {
+        allFullPaths.append(e.fullPath);
+    }
+    if (m_outgoingFiles == allFullPaths) return;
+
+    m_outgoingFiles = allFullPaths;
+    m_lastIncomingFiles.clear();
 
     // Build FileGroupDescriptorW payload
-    UINT32 cItems = validFiles.size();
+    UINT32 cItems = entries.size();
     size_t headerSize = sizeof(UINT32);
     size_t itemSize = sizeof(FILEDESCRIPTORW);
     size_t totalSize = headerSize + cItems * itemSize;
@@ -650,26 +753,35 @@ void RdpCliprdrChannel::onHostClipboardFilesChanged(const QStringList &filePaths
     *reinterpret_cast<UINT32*>(ptr) = cItems;
     ptr += headerSize;
 
-    for (int i = 0; i < validFiles.size(); i++) {
-        QFileInfo fi(validFiles[i]);
+    for (int i = 0; i < entries.size(); i++) {
+        const auto& item = entries[i];
         FILEDESCRIPTORW* fd = reinterpret_cast<FILEDESCRIPTORW*>(ptr + i * itemSize);
         fd->dwFlags = FD_FILESIZE | FD_WRITESTIME | FD_ATTRIBUTES;
-        fd->dwFileAttributes = 0x00000080; // FILE_ATTRIBUTE_NORMAL
-        uint64_t sz = fi.size();
-        fd->nFileSizeLow = (DWORD)(sz & 0xFFFFFFFF);
-        fd->nFileSizeHigh = (DWORD)(sz >> 32);
+        if (item.isDirectory) {
+            fd->dwFileAttributes = 0x00000010; // FILE_ATTRIBUTE_DIRECTORY
+            fd->nFileSizeLow = 0;
+            fd->nFileSizeHigh = 0;
+        } else {
+            fd->dwFileAttributes = 0x00000080; // FILE_ATTRIBUTE_NORMAL
+            fd->nFileSizeLow = (DWORD)(item.fileSize & 0xFFFFFFFF);
+            fd->nFileSizeHigh = (DWORD)(item.fileSize >> 32);
+        }
 
-        QString fileName = fi.fileName();
-        int copyLen = static_cast<int>(std::min<qsizetype>(fileName.length(), 259));
-        memcpy(fd->cFileName, fileName.utf16(), copyLen * sizeof(char16_t));
+        uint64_t mtimeMs = item.lastModified.toMSecsSinceEpoch();
+        uint64_t winTime = (mtimeMs + 11644473600000ULL) * 10000ULL;
+        fd->ftLastWriteTime.dwLowDateTime = (DWORD)(winTime & 0xFFFFFFFF);
+        fd->ftLastWriteTime.dwHighDateTime = (DWORD)(winTime >> 32);
+
+        int copyLen = static_cast<int>(std::min<qsizetype>(item.relativePath.length(), 259));
+        memcpy(fd->cFileName, item.relativePath.utf16(), copyLen * sizeof(char16_t));
         fd->cFileName[copyLen] = 0;
     }
 
-    m_lastHostClipboardText = validFiles.join("\n");
+    m_lastHostClipboardText = validRootFiles.join(QStringLiteral("\r\n"));
 
     if (!m_context || !m_cliprdrReady) return;
 
-    qInfo() << "CLIPRDR: Host clipboard files changed (" << validFiles.size() << "files), announcing ServerFormatList";
+    qInfo() << "CLIPRDR: Host clipboard files changed (" << entries.size() << "entries, root files:" << validRootFiles.size() << "), announcing ServerFormatList";
 
     CLIPRDR_FORMAT_LIST formatList;
     memset(&formatList, 0, sizeof(formatList));

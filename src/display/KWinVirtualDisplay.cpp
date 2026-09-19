@@ -1,5 +1,6 @@
 #include "display/KWinVirtualDisplay.h"
 #include "input/EiConnection.h"
+#include "video/CodecHooks.h"
 #include <cmath>
 #include <QDebug>
 #include <QDBusConnection>
@@ -21,6 +22,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFileInfo>
+#include <QStandardPaths>
 
 QDBusArgument &operator<<(QDBusArgument &arg, const PortalStream &stream) {
     arg.beginStructure();
@@ -55,6 +57,7 @@ KWinVirtualDisplay::KWinVirtualDisplay(QObject *parent)
 
 KWinVirtualDisplay::~KWinVirtualDisplay()
 {
+    cancelPointerNudges();
     destroyDisplay();
 }
 
@@ -487,12 +490,22 @@ static QProcessEnvironment getKScreenEnvironment()
         env.insert("QT_QPA_PLATFORM", "wayland");
     }
     if (!env.contains("XDG_RUNTIME_DIR")) {
-        env.insert("XDG_RUNTIME_DIR", QString("/run/user/%1").arg(getuid()));
+        QString runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        if (runtimeDir.isEmpty()) {
+            runtimeDir = QString("/run/user/%1").arg(getuid());
+        }
+        env.insert("XDG_RUNTIME_DIR", runtimeDir);
     }
     if (!env.contains("WAYLAND_DISPLAY")) {
-        QString waylandSocket = QString("/run/user/%1/wayland-0").arg(getuid());
-        if (QFile::exists(waylandSocket)) {
+        QString runtimeDir = env.value("XDG_RUNTIME_DIR");
+        if (QFile::exists(runtimeDir + "/wayland-0")) {
             env.insert("WAYLAND_DISPLAY", "wayland-0");
+        } else {
+            QDir dir(runtimeDir);
+            QStringList sockets = dir.entryList(QStringList() << "wayland-*", QDir::System | QDir::Files);
+            if (!sockets.isEmpty()) {
+                env.insert("WAYLAND_DISPLAY", sockets.first());
+            }
         }
     }
     return env;
@@ -810,10 +823,29 @@ void KWinVirtualDisplay::onClientConnected(const QSize &resolution, double scale
 void KWinVirtualDisplay::onClientDisconnected()
 {
     qInfo() << "KWinVirtualDisplay: RDP Client disconnected";
+    cancelPointerNudges();
     m_eiConnection.reset();
     m_accumulatedX = 0.0;
     m_accumulatedY = 0.0;
     destroyDisplay();
+}
+
+void KWinVirtualDisplay::setScreenLocked(bool locked)
+{
+    m_isScreenLocked = locked;
+    cancelPointerNudges();
+    qInfo() << "KWinVirtualDisplay: Screen lock state set to:" << (locked ? "LOCKED" : "UNLOCKED");
+}
+
+void KWinVirtualDisplay::cancelPointerNudges()
+{
+    for (QTimer *timer : m_nudgeTimers) {
+        if (timer) {
+            timer->stop();
+            timer->deleteLater();
+        }
+    }
+    m_nudgeTimers.clear();
 }
 
 void KWinVirtualDisplay::changeResolution(const QSize &newSize, double scale)
@@ -843,6 +875,11 @@ void KWinVirtualDisplay::sendPointerMotionAbsolute(double x, double y)
 {
     if (m_sessionPath.isEmpty() || !m_displayActive)
         return;
+
+    if (x == m_lastPointerX && y == m_lastPointerY)
+        return;
+
+    cancelPointerNudges();
 
     m_lastPointerX = x;
     m_lastPointerY = y;
@@ -913,25 +950,22 @@ void KWinVirtualDisplay::sendPointerButton(int button, uint state)
     }
 
     // When releasing a mouse button (e.g. desktop area selection rubberband, dragging window/files,
-    // closing dropdown menus), Plasma/apps tear down the overlay/selection box with an OpacityAnimator.
-    // If the user stops moving the mouse immediately, KWin Wayland ignores zero-delta motion (m_pos == pos).
-    // By nudging the pointer position by 1 pixel and back across the 280ms animation lifecycle,
-    // KWin's PointerInputRedirection processes motion, updates pointer focus, and forces the compositor
-    // to render and transmit the final clean frame immediately.
-    if (state == 0) {
-        double deltaX = (m_lastPointerX + 1.0 < m_requestedSize.width()) ? 1.0 : -1.0;
-        QTimer::singleShot(60, this, [this, deltaX]() {
-            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
+    // closing dropdown menus), Plasma/apps tear down the overlay/selection box with an OpacityAnimator (~250ms).
+    // Request an IDR keyframe right after the animation to ensure any lingering sub-pixel opacity ghosts
+    // are completely eliminated, without synthetic pointer movement that triggers KWin's shakecursor effect.
+    if (state == 0 && !m_isScreenLocked) {
+        cancelPointerNudges();
+        auto *timer = new QTimer(this);
+        timer->setSingleShot(true);
+        connect(timer, &QTimer::timeout, this, [this, timer]() {
+            CodecHooks_requestKeyframe();
+            m_nudgeTimers.removeOne(timer);
+            timer->deleteLater();
         });
-        QTimer::singleShot(120, this, [this]() {
-            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
-        });
-        QTimer::singleShot(200, this, [this, deltaX]() {
-            sendPointerMotionAbsolute(m_lastPointerX + deltaX, m_lastPointerY);
-        });
-        QTimer::singleShot(280, this, [this]() {
-            sendPointerMotionAbsolute(m_lastPointerX, m_lastPointerY);
-        });
+        m_nudgeTimers.append(timer);
+        timer->start(280);
+    } else if (state == 1) {
+        cancelPointerNudges();
     }
 }
 
