@@ -83,7 +83,7 @@ private:
     static BOOL peerAccepted(freerdp_listener* listener, freerdp_peer* peer);
     static BOOL peerContextNew(freerdp_peer* peer, rdpContext* context);
     static void peerContextFree(freerdp_peer* peer, rdpContext* context);
-    
+
     static DWORD WINAPI listenerThread(LPVOID param);
     static DWORD WINAPI peerThread(LPVOID param);
 
@@ -108,6 +108,7 @@ private:
     freerdp_listener* m_listener{nullptr};
     HANDLE m_listenerThread{nullptr};
     bool m_running{false};
+    std::atomic<bool> m_peerStopRequested{false};
 
 public:
     RdpGfxChannel m_gfxChannel;
