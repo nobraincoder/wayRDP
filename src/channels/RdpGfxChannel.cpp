@@ -234,6 +234,17 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
 
     {
         std::lock_guard<std::mutex> lock(m_frameQueueMutex);
+
+        // Hot-path optimization: identical back-to-back frames are a common artifact when the
+        // desktop is static or the encoder is briefly repeating the same frame. Dropping those
+        // duplicates reduces queue pressure without affecting correctness.
+        if (!m_frameQueue.empty()) {
+            const QueuedVideoFrame &last = m_frameQueue.back();
+            if (last.data == data && last.isKeyFrame == isKeyFrame) {
+                return;
+            }
+        }
+
         if (m_frameQueue.size() > 60) {
             // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
             // In H.264, dropping a delta frame breaks the reference chain in mstsc,
@@ -460,7 +471,7 @@ UINT RdpGfxChannel::capsAdvertiseCallback(RdpgfxServerContext* context, const RD
 
     for (UINT16 i = 0; i < capsAdvertise->capsSetCount; i++) {
         const RDPGFX_CAPSET* capsSet = &capsAdvertise->capsSets[i];
-        
+
         qInfo() << "RdpGfxChannel: Client advertised capSet[" << i << "] version:"
                 << QString("0x%1").arg(capsSet->version, 8, 16, QChar('0'))
                 << "flags:" << QString("0x%1").arg(capsSet->flags, 8, 16, QChar('0'));
