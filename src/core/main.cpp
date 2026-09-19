@@ -141,7 +141,6 @@ int main(int argc, char *argv[])
             qputenv("KPIPEWIRE_FORCE_ENCODER", encoder.toUtf8());
         }
     } else if (qEnvironmentVariableIsEmpty("KPIPEWIRE_FORCE_ENCODER")) {
-        // Automatically probe hardware acceleration availability
         bool hasNvidia = (QFile::exists("/dev/nvidia0") || QFile::exists("/dev/nvidiactl"));
         bool hasDri = false;
         QDir driDir("/dev/dri");
@@ -168,7 +167,6 @@ int main(int argc, char *argv[])
     app.setApplicationDisplayName("wayRDP Server");
     app.setApplicationVersion("0.1.0");
 
-    // Automatically configure mega-authorization so RemoteDesktop portal Start never stalls
     ensurePermissionsAuthorized();
 
     qInfo() << "Initializing OpenSSL legacy and default providers...";
@@ -189,7 +187,6 @@ int main(int argc, char *argv[])
     SessionLifecycleController lifecycleController;
     QtAudioController audioController;
 
-    // Session lifecycle (Sleep inhibit during active RDP session, optional auto-lock on disconnect)
     QObject::connect(&server, &RdpServer::clientConnected,
                      &lifecycleController, &SessionLifecycleController::onClientConnected);
     QObject::connect(&server, &RdpServer::clientConnected,
@@ -199,7 +196,6 @@ int main(int argc, char *argv[])
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      &lifecycleController, &SessionLifecycleController::onClientDisconnected);
 
-    // Dynamic lock/unlock transitions (Purge stale queue and request fresh IDR keyframe to prevent flash)
     QObject::connect(&lifecycleController, &SessionLifecycleController::sessionUnlocked,
                      [&virtualDisplay, &streamController, &server]() {
                          qInfo() << "Main: Session unlocked! Purging stale frames and requesting keyframe...";
@@ -207,9 +203,6 @@ int main(int argc, char *argv[])
                          streamController.onClientActivity();
                          CodecHooks_requestKeyframe();
                          server.purgeStaleFrames();
-                         // KScreenLocker teardown takes 150-250ms for KWin to finish compositing the unlocked desktop.
-                         // Schedule a second purge and keyframe request after 250ms to ensure the clean desktop is transmitted
-                         // and eradicate any lingering lockscreen frame from the hardware encoder pipeline.
                          QTimer::singleShot(250, &server, [&server, &streamController]() {
                              qInfo() << "Main: Post-unlock stabilization timer fired: requesting clean desktop keyframe";
                              streamController.onClientActivity();
@@ -224,20 +217,16 @@ int main(int argc, char *argv[])
                          server.purgeStaleFrames();
                      });
 
-    // Idle power saver (Dynamic FPS throttling when no input activity from client)
     QObject::connect(&server, &RdpServer::clientActivity,
                      &streamController, &PipeWireStreamController::onClientActivity);
 
-    // Connect RdpServer and IVirtualDisplayBackend / PipeWireStreamController
     QObject::connect(&server, &RdpServer::clientConnected,
                      virtualDisplay.get(), &IVirtualDisplayBackend::onClientConnected);
-    // When client disconnects, stop PipeWire stream FIRST, then tear down virtual display session
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      &streamController, &PipeWireStreamController::onStreamStopped);
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      virtualDisplay.get(), &IVirtualDisplayBackend::onClientDisconnected);
 
-    // Dynamic resolution changes via DisplayControl ([MS-RDPEDISP])
     QObject::connect(&server, &RdpServer::requestedResolutionChanged,
                      virtualDisplay.get(), &IVirtualDisplayBackend::changeResolution);
     QObject::connect(&server, &RdpServer::requestedResolutionChanged,
@@ -249,7 +238,6 @@ int main(int argc, char *argv[])
                          server.resetGraphicsSurface(newSize.width(), newSize.height());
                      });
 
-    // Input events wiring
     QObject::connect(&server, &RdpServer::pointerMotionAbsolute,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendPointerMotionAbsolute);
     QObject::connect(&server, &RdpServer::pointerButton,
@@ -271,11 +259,9 @@ int main(int argc, char *argv[])
     QObject::connect(&server, &RdpServer::keyboardKeysym,
                      virtualDisplay.get(), &IVirtualDisplayBackend::sendKeyboardKeysym);
 
-    // Dynamic encoding parameters
     QObject::connect(&server, &RdpServer::clientEncodingConfigured,
                      &streamController, &PipeWireStreamController::setEncodingParameters);
 
-    // Wire PipeWire screen capture stream
     QObject::connect(virtualDisplay.get(), &IVirtualDisplayBackend::streamStarted,
                      &streamController, &PipeWireStreamController::onStreamStarted);
     QObject::connect(&streamController, &PipeWireStreamController::videoPacketEncoded,
@@ -283,7 +269,6 @@ int main(int argc, char *argv[])
     QObject::connect(&streamController, &PipeWireStreamController::cursorShapeChanged,
                      &server, &RdpServer::updateCursorShape);
 
-    // Audio output channel wiring
     QObject::connect(&server, &RdpServer::audioConfigured,
                      &audioController, &QtAudioController::startAudioCapture);
     QObject::connect(&audioController, &QtAudioController::audioSamplesReady,
@@ -291,11 +276,6 @@ int main(int argc, char *argv[])
     QObject::connect(&server, &RdpServer::clientDisconnected,
                      &audioController, &QtAudioController::stopAudioCapture);
 
-
-    // Wire Clipboard via KSystemClipboard & Klipper D-Bus
-    // On Wayland, background services without an active focused window are rejected from calling
-    // wl_data_device.set_selection directly. Setting clipboard contents via org.kde.klipper D-Bus
-    // uses Plasma's privileged compositor connection, ensuring text is placed on the host clipboard reliably.
     KSystemClipboard *sysClipboard = KSystemClipboard::instance();
 
     QObject::connect(&server, &RdpServer::clientClipboardReceived, [sysClipboard](const QString &text) {
@@ -351,7 +331,6 @@ int main(int argc, char *argv[])
         });
     }
 
-    // Connect to Klipper's clipboardHistoryUpdated signal for host->client clipboard sync
     QDBusConnection::sessionBus().connect(
         "org.kde.klipper",
         "/klipper",
@@ -361,7 +340,6 @@ int main(int argc, char *argv[])
         SLOT(onKlipperClipboardHistoryUpdated())
     );
 
-    // Initial sync from Klipper
     server.onKlipperClipboardHistoryUpdated();
 
     int port = 3390;
@@ -379,7 +357,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Install SIGINT / SIGTERM signal handler to restore primary display and close sessions cleanly
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sigFd) == 0) {
         QSocketNotifier *sn = new QSocketNotifier(sigFd[1], QSocketNotifier::Read, &app);
         QObject::connect(sn, &QSocketNotifier::activated, [sn, &app]() {
@@ -420,5 +397,5 @@ int main(int argc, char *argv[])
         virtualDisplay->destroyDisplay();
     }
     server.stop();
-    ::_exit(ret);
+    return ret;
 }
