@@ -483,12 +483,18 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
         if (!server->m_samFilePath.isEmpty()) {
             freerdp_settings_set_string(settings, FreeRDP_NtlmSamFile, server->m_samFilePath.toUtf8().constData());
             freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, TRUE);
             qInfo() << "Configured NLA security with SAM database for connection:" << peer->hostname;
         } else {
             freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, FALSE);
         }
     } else {
+        // FreeRDP 3.32+ enables FreeRDP_ExtSecurity by default, which causes PROTOCOL_HYBRID_EX
+        // to be selected if client requests it, bypassing TLS/PAM and failing SAM database lookup.
+        // Explicitly disable both NLA and Extended Security in TLS/PAM mode.
         freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
+        freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, FALSE);
         if (noAuth) {
             qInfo() << "Operating in NO_AUTH mode (RDP_NO_AUTH set) for connection:" << peer->hostname;
             freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, TRUE);
