@@ -311,6 +311,7 @@ BOOL RdpServer::peerContextNew(freerdp_peer* peer, rdpContext* context)
         return FALSE;
     }
 
+    freerdp_settings_set_uint32(peer->context->settings, FreeRDP_MultifragMaxRequestSize, 0xFFFFFF);
     freerdp_settings_set_uint32(peer->context->settings, FreeRDP_PointerCacheSize, 64);
     freerdp_settings_set_uint32(peer->context->settings, FreeRDP_LargePointerFlag, LARGE_POINTER_FLAG_96x96 | LARGE_POINTER_FLAG_384x384);
     return TRUE;
@@ -514,6 +515,9 @@ DWORD WINAPI RdpServer::peerThread(LPVOID param)
     freerdp_settings_set_bool(settings, FreeRDP_UnicodeInput, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_HasRelativeMouseEvent, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, TRUE);
+    freerdp_settings_set_uint32(settings, FreeRDP_MultifragMaxRequestSize, 0xFFFFFF);
+    freerdp_settings_set_uint32(settings, FreeRDP_PointerCacheSize, 64);
+    freerdp_settings_set_uint32(settings, FreeRDP_LargePointerFlag, LARGE_POINTER_FLAG_96x96 | LARGE_POINTER_FLAG_384x384);
 
     QString certDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QString certPath = certDir + "/server.crt";
@@ -979,8 +983,13 @@ BOOL RdpServer::peerActivate(freerdp_peer* peer)
 
 BOOL RdpServer::peerCapabilities(freerdp_peer* peer)
 {
-    Q_UNUSED(peer);
-    qInfo() << "Capabilities exchange triggered";
+    rdpSettings* s = peer->context->settings;
+    qInfo() << "Capabilities exchange triggered:"
+            << "PointerCacheSize:" << freerdp_settings_get_uint32(s, FreeRDP_PointerCacheSize)
+            << "ColorPointerCacheSize:" << freerdp_settings_get_uint32(s, FreeRDP_ColorPointerCacheSize)
+            << "LargePointerFlag:" << freerdp_settings_get_uint32(s, FreeRDP_LargePointerFlag)
+            << "MultifragMaxRequestSize:" << freerdp_settings_get_uint32(s, FreeRDP_MultifragMaxRequestSize)
+            << "FastPathOutput:" << freerdp_settings_get_bool(s, FreeRDP_FastPathOutput);
     return TRUE;
 }
 
@@ -1535,6 +1544,8 @@ void RdpServer::updateCursorShape(const QImage &image, const QPoint &hotspot)
     }
     if (peer) {
         m_cursorManager.updateCursorShape(peer, image, hotspot);
+    } else {
+        qWarning() << "RdpServer::updateCursorShape: no active peer!";
     }
 }
 
