@@ -115,11 +115,21 @@ void QtAudioController::captureWorker()
     ss.rate = rate;
     ss.channels = 2;
 
-    // 20ms chunk = (rate * 20 / 1000) frames * 4 bytes/frame (matches RDP latency buffer)
-    uint32_t chunkSize = (rate * 20 / 1000) * 4;
+    const uint32_t bytesPerFrame = ss.channels * sizeof(int16_t);
+    // 20ms chunk = (rate * 20 / 1000) frames * bytesPerFrame (matches RDP latency buffer)
+    uint32_t chunkSize = (rate * 20 / 1000) * bytesPerFrame;
+
+    uint32_t flushMs = 120;
+    if (qEnvironmentVariableIsSet("RDP_AUDIO_FLUSH_MS")) {
+        bool ok = false;
+        int envFlush = qEnvironmentVariable("RDP_AUDIO_FLUSH_MS").toInt(&ok);
+        if (ok && envFlush >= 40 && envFlush <= 1000) {
+            flushMs = static_cast<uint32_t>(envFlush);
+        }
+    }
 
     pa_buffer_attr attr;
-    attr.maxlength = chunkSize * 10; // 200ms max buffer — matches our relaxed flush threshold
+    attr.maxlength = (rate * flushMs / 1000) * bytesPerFrame;
     attr.tlength = static_cast<uint32_t>(-1);
     attr.prebuf = static_cast<uint32_t>(-1);
     attr.minreq = static_cast<uint32_t>(-1);
@@ -167,9 +177,12 @@ void QtAudioController::captureWorker()
     }
 
     qInfo() << "QtAudioController: PulseAudio recording started for desktop audio at" << rate
-            << "Hz 16-bit stereo (20ms buffer:" << chunkSize << "bytes, volume headroom scale:" << volumeScale << ")";
+            << "Hz 16-bit stereo (20ms buffer:" << chunkSize << "bytes, flush threshold:" << flushMs
+            << "ms, volume headroom scale:" << volumeScale << ")";
 
     QByteArray buffer(chunkSize, 0);
+
+    const pa_usec_t maxLatencyUsec = static_cast<pa_usec_t>(flushMs) * 1000;
 
     while (m_recording) {
         if (pa_simple_read(s, buffer.data(), chunkSize, &error) < 0) {
@@ -179,12 +192,9 @@ void QtAudioController::captureWorker()
             break;
         }
 
-        // Real-time synchronization: flush stale audio backlog only if buffer latency
-        // exceeds 200ms, which indicates a significant drift (e.g. after a network
-        // keyframe burst). The previous 80ms threshold was too aggressive and caused
-        // audible gaps that made the audio sound choppy or "different".
+        // Real-time synchronization: flush stale audio backlog when latency exceeds threshold
         pa_usec_t latency = pa_simple_get_latency(s, &error);
-        if (latency > 200000) {
+        if (latency > maxLatencyUsec) {
             pa_simple_flush(s, &error);
         }
 
