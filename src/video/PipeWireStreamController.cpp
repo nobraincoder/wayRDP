@@ -197,7 +197,7 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
     m_stream->setMaxFramerate(m_framerate);
     m_stream->setQuality(m_quality);
 
-    int maxPending = 32;
+    int maxPending = 8;
     bool okPending = false;
     int envPending = qEnvironmentVariable("RDP_MAX_PENDING_FRAMES").toInt(&okPending);
     if (okPending && envPending >= 3) {

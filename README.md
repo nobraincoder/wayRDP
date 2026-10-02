@@ -227,6 +227,11 @@ RDP_AUDIO_VOLUME=1.0
 # Routes desktop audio to an isolated null-sink (format=s16le, 48kHz stereo) to prevent monitor conflicts
 RDP_AUDIO_VIRTUAL_SINK=1
 
+# Audio Latency Flush Threshold in milliseconds (default: 120, range: 40-1000)
+# Flushes PulseAudio capture backlog when drift exceeds threshold to maintain real-time sync.
+# Use 60-80ms for low-latency LANs or 150-200ms on higher-jitter networks.
+# RDP_AUDIO_FLUSH_MS=120
+
 # --- Optional Input Overrides (Takes precedence over KDE System Settings) ---
 
 # Windows Client Scroll Multiplier:
