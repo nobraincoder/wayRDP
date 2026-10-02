@@ -27,6 +27,7 @@ private:
     struct CursorCacheEntry {
         uint32_t cacheId{0};
         QPoint hotspot;
+        size_t contentHash{0};
         QImage image;
         std::chrono::steady_clock::time_point lastUsed;
     };
