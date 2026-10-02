@@ -2,7 +2,9 @@
 
 #include <QImage>
 #include <QPoint>
+#include <QRect>
 #include <QHash>
+#include <QSet>
 #include <QByteArray>
 #include <chrono>
 #include <freerdp/freerdp.h>
@@ -29,8 +31,15 @@ private:
         std::chrono::steady_clock::time_point lastUsed;
     };
 
+    static QRect findContentBounds(const QImage &image);
     static QByteArray createXorMask(const QImage &image);
+    static QByteArray createAndMask(const QImage &image);
 
     QHash<uint32_t, CursorCacheEntry> m_cursorCache;
-    CursorCacheEntry* m_lastUsedCursor{nullptr};
+    bool m_hasLastUsed{false};
+    uint32_t m_lastUsedCacheId{0};
+    QPoint m_lastHotspot;
+    qint64 m_lastCacheKey{0};
+    QImage m_lastImage;
 };
+
