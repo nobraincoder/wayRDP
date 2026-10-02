@@ -78,6 +78,7 @@ signals:
 
     void clientClipboardReceived(const QString &text);
     void clientFilesReceived(const QStringList &filePaths);
+    void clipboardTruncated(int limit);
     void audioConfigured(uint32_t sampleRate);
     void clientActivity();
 

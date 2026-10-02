@@ -710,8 +710,9 @@ void RdpCliprdrChannel::onHostClipboardFilesChanged(const QStringList &filePaths
             QDirIterator it(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
             while (it.hasNext()) {
                 if (entries.size() >= MAX_CLIPBOARD_FILES) {
-                    qWarning() << "CLIPRDR: Directory clipboard file enumeration reached safety limit of"
-                               << MAX_CLIPBOARD_FILES << "files; stopping traversal to prevent hanging session";
+                    qWarning() << "CLIPRDR: WARNING: Clipboard directory truncated at"
+                               << MAX_CLIPBOARD_FILES << "files. Some files will not be available in remote session.";
+                    emit clipboardTruncated(MAX_CLIPBOARD_FILES);
                     break;
                 }
                 it.next();

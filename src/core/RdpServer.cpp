@@ -64,6 +64,8 @@ RdpServer::RdpServer(QObject *parent)
             this, &RdpServer::clientClipboardReceived);
     connect(&m_cliprdrChannel, &RdpCliprdrChannel::clientFilesReceived,
             this, &RdpServer::clientFilesReceived);
+    connect(&m_cliprdrChannel, &RdpCliprdrChannel::clipboardTruncated,
+            this, &RdpServer::clipboardTruncated);
 
     m_pcmFormats[0].wFormatTag = WAVE_FORMAT_PCM;
     m_pcmFormats[0].nChannels = 2;

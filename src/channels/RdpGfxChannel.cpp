@@ -258,8 +258,22 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
             m_frameQueue.clear();
             m_waitingForKeyFrame = true;
             CodecHooks_requestKeyframe();
+
+            const auto now = std::chrono::steady_clock::now();
+            while (!m_overflowTimestamps.empty() &&
+                   std::chrono::duration_cast<std::chrono::seconds>(now - m_overflowTimestamps.front()).count() > 60) {
+                m_overflowTimestamps.pop_front();
+            }
+            m_overflowTimestamps.push_back(now);
+
             qWarning() << "RdpGfxChannel: Frame queue overflow (" << droppedCount
                        << "frames), cleared queue and requested IDR keyframe to resync stream";
+
+            if (m_overflowTimestamps.size() >= 3) {
+                qWarning() << "RdpGfxChannel: Warning:" << m_overflowTimestamps.size()
+                           << "frame queue overflows in the last 60s. Network latency or encoder backpressure is high;"
+                           << "consider setting RDP_ENCODER_PREFERENCE=speed or increasing RDP_MAX_PENDING_FRAMES=12+";
+            }
             return;
         }
         m_frameQueue.push_back({data, isKeyFrame, frameHash});

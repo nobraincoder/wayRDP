@@ -33,6 +33,7 @@ public slots:
 signals:
     void clientClipboardReceived(const QString &text);
     void clientFilesReceived(const QStringList &filePaths);
+    void clipboardTruncated(int limit);
 
 private:
     static UINT cliprdr_client_capabilities(CliprdrServerContext* context, const CLIPRDR_CAPABILITIES* capabilities);
