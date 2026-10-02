@@ -61,6 +61,7 @@ private:
 
     QSize m_lastCursorSize;
     QPoint m_lastCursorHotspot;
+    qint64 m_lastCursorCacheKey{0};
 
     // Idle Power Saver (Dynamic FPS throttling)
     QTimer *m_idleTimer{nullptr};

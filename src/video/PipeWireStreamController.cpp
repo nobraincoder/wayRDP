@@ -145,6 +145,9 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
     m_consecutiveActiveFrames = 0;
     m_lastPacketTimeMs = 0;
     m_mismatchDropCount = 0;
+    m_lastCursorCacheKey = 0;
+    m_lastCursorHotspot = QPoint();
+    m_lastCursorSize = QSize();
 
     m_lastActivityTimer.restart();
     m_isIdle = false;
@@ -228,6 +231,9 @@ void PipeWireStreamController::onStreamStopped()
     m_consecutiveActiveFrames = 0;
     m_lastPacketTimeMs = 0;
     m_mismatchDropCount = 0;
+    m_lastCursorCacheKey = 0;
+    m_lastCursorHotspot = QPoint();
+    m_lastCursorSize = QSize();
 
     if (m_stream) {
         qInfo() << "PipeWireStreamController: Stopping stream...";
@@ -322,12 +328,18 @@ void PipeWireStreamController::onNewPacket(const PipeWireEncodedStream::Packet &
 void PipeWireStreamController::onCursorChanged(const PipeWireCursor &cursor)
 {
     if (!cursor.texture.isNull()) {
-        if (cursor.texture.size() != m_lastCursorSize || cursor.hotspot != m_lastCursorHotspot) {
-            m_lastCursorSize = cursor.texture.size();
-            m_lastCursorHotspot = cursor.hotspot;
-            qInfo() << "PipeWireStreamController: Cursor shape changed | size:" << cursor.texture.size()
-                    << "hotspot:" << cursor.hotspot << "pos:" << cursor.position;
+        const qint64 key = cursor.texture.cacheKey();
+        if (key == m_lastCursorCacheKey && cursor.hotspot == m_lastCursorHotspot) {
+            return;
         }
+
+        m_lastCursorCacheKey = key;
+        m_lastCursorHotspot = cursor.hotspot;
+        m_lastCursorSize = cursor.texture.size();
+
+        qInfo() << "PipeWireStreamController: Cursor shape changed | size:" << cursor.texture.size()
+                << "hotspot:" << cursor.hotspot << "pos:" << cursor.position;
+
         emit cursorShapeChanged(cursor.texture, cursor.hotspot);
     }
 }
