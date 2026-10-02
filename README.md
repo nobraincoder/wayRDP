@@ -199,6 +199,7 @@ RDP_ENCODER_PREFERENCE=speed
 
 # Bounded Encoder Buffer Depth (default: 8, minimum: 3)
 # Limits pending frame queue depth to prevent buffer bloat and eliminate "Filter queue is full" drop storms.
+# Recommend 12+ for 4K resolution / high motion at 60 FPS.
 # RDP_MAX_PENDING_FRAMES=8
 
 # GOP Size / Intra Keyframe Period (default: 30)
@@ -229,7 +230,7 @@ RDP_AUDIO_VIRTUAL_SINK=1
 
 # Audio Latency Flush Threshold in milliseconds (default: 120, range: 40-1000)
 # Flushes PulseAudio capture backlog when drift exceeds threshold to maintain real-time sync.
-# Use 60-80ms for low-latency LANs or 150-200ms on higher-jitter networks.
+# Use 60-80ms for low-latency LANs, or 200ms if dropouts occur during high-motion video like YouTube.
 # RDP_AUDIO_FLUSH_MS=120
 
 # --- Optional Input Overrides (Takes precedence over KDE System Settings) ---

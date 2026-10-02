@@ -3,6 +3,7 @@
 #include <pulse/error.h>
 #include <QDebug>
 #include <QProcess>
+#include <QElapsedTimer>
 
 QtAudioController::QtAudioController(QObject *parent)
     : QObject(parent)
@@ -183,6 +184,8 @@ void QtAudioController::captureWorker()
     QByteArray buffer(chunkSize, 0);
 
     const pa_usec_t maxLatencyUsec = static_cast<pa_usec_t>(flushMs) * 1000;
+    QElapsedTimer latencyLogTimer;
+    latencyLogTimer.start();
 
     while (m_recording) {
         if (pa_simple_read(s, buffer.data(), chunkSize, &error) < 0) {
@@ -194,8 +197,17 @@ void QtAudioController::captureWorker()
 
         // Real-time synchronization: flush stale audio backlog when latency exceeds threshold
         pa_usec_t latency = pa_simple_get_latency(s, &error);
-        if (latency > maxLatencyUsec) {
-            pa_simple_flush(s, &error);
+        if (latency != static_cast<pa_usec_t>(-1)) {
+            if (latency > maxLatencyUsec) {
+                pa_simple_flush(s, &error);
+            }
+
+            if (latencyLogTimer.elapsed() >= 5000) {
+                qInfo().noquote() << QString("QtAudioController: Audio latency: %1ms (flush threshold: %2ms)")
+                                       .arg(latency / 1000)
+                                       .arg(flushMs);
+                latencyLogTimer.restart();
+            }
         }
 
         // Apply volume headroom scaling with saturation clamping to prevent digital clipping/distortion
