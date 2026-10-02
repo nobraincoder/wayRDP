@@ -705,9 +705,15 @@ void RdpCliprdrChannel::onHostClipboardFilesChanged(const QStringList &filePaths
         entries.append(entry);
 
         if (fi.isDir()) {
+            constexpr int MAX_CLIPBOARD_FILES = 5000;
             QDir rootDir(path);
             QDirIterator it(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
             while (it.hasNext()) {
+                if (entries.size() >= MAX_CLIPBOARD_FILES) {
+                    qWarning() << "CLIPRDR: Directory clipboard file enumeration reached safety limit of"
+                               << MAX_CLIPBOARD_FILES << "files; stopping traversal to prevent hanging session";
+                    break;
+                }
                 it.next();
                 QFileInfo childFi = it.fileInfo();
                 QString rel = fi.fileName() + QLatin1Char('\\') + rootDir.relativeFilePath(childFi.absoluteFilePath());

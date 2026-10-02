@@ -250,14 +250,15 @@ void RdpGfxChannel::sendFrame(const QByteArray &data, bool isKeyFrame)
             }
         }
 
-        if (m_frameQueue.size() > 60) {
+        if (m_frameQueue.size() > 20) {
             // NEVER silently drop a delta P-frame without waiting for an IDR keyframe!
             // In H.264, dropping a delta frame breaks the reference chain in mstsc,
             // permanently freezing the client video stream until an IDR frame arrives.
+            const size_t droppedCount = m_frameQueue.size();
             m_frameQueue.clear();
             m_waitingForKeyFrame = true;
             CodecHooks_requestKeyframe();
-            qWarning() << "RdpGfxChannel: Frame queue overflow (" << m_frameQueue.size()
+            qWarning() << "RdpGfxChannel: Frame queue overflow (" << droppedCount
                        << "frames), cleared queue and requested IDR keyframe to resync stream";
             return;
         }

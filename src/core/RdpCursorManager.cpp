@@ -137,9 +137,16 @@ void RdpCursorManager::updateCursorShape(freerdp_peer* peer, const QImage &image
 
     // Check if processed cursor is already in client cache
     const qint64 targetCacheKey = cropped.cacheKey();
+    const size_t targetHash = qHashBits(cropped.constBits(), cropped.sizeInBytes());
     auto itr = std::find_if(m_cursorCache.begin(), m_cursorCache.end(),
-        [&cropped, &newHotspot, targetCacheKey](const CursorCacheEntry &cached) {
-            return cached.hotspot == newHotspot && (cached.image.cacheKey() == targetCacheKey || cached.image == cropped);
+        [&cropped, &newHotspot, targetCacheKey, targetHash](const CursorCacheEntry &cached) {
+            if (cached.hotspot != newHotspot || cached.image.size() != cropped.size()) {
+                return false;
+            }
+            if (cached.image.cacheKey() == targetCacheKey || cached.contentHash == targetHash) {
+                return true;
+            }
+            return cached.image == cropped;
         });
 
     if (itr != m_cursorCache.end()) {
@@ -186,6 +193,7 @@ void RdpCursorManager::updateCursorShape(freerdp_peer* peer, const QImage &image
     CursorCacheEntry newEntry;
     newEntry.cacheId = cacheId;
     newEntry.hotspot = newHotspot;
+    newEntry.contentHash = targetHash;
     newEntry.image = cropped;
     newEntry.lastUsed = std::chrono::steady_clock::now();
 
