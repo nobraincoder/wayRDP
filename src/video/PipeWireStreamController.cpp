@@ -206,6 +206,16 @@ void PipeWireStreamController::onStreamStarted(uint nodeId, int fd, const QSize 
     if (okPending && envPending >= 3) {
         maxPending = envPending;
     }
+
+    if (maxPending < 5) {
+        qWarning() << "PipeWireStreamController: Warning: max pending frames (" << maxPending
+                   << ") may be too low for 4K; consider RDP_MAX_PENDING_FRAMES=12+";
+    } else if ((size.width() >= 3840 || size.height() >= 2160) && maxPending < 12) {
+        qInfo() << "PipeWireStreamController: 4K resolution detected (" << size.width() << "x" << size.height()
+                << ") with max pending frames =" << maxPending
+                << "; consider RDP_MAX_PENDING_FRAMES=12+ if frame drops occur during high motion";
+    }
+
     m_stream->setMaxPendingFrames(maxPending);
     qInfo() << "PipeWireStreamController: Configured max pending encoder frames:" << maxPending;
 
