@@ -10,6 +10,7 @@
 #include <QDBusInterface>
 #include <QDBusReply>
 #include <QDBusConnection>
+#include <QProcess>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -312,6 +313,32 @@ int main(int argc, char *argv[])
             mime->setUrls(urls);
             mime->setText(filePaths.join("\n"));
             sysClipboard->setMimeData(mime, QClipboard::Clipboard);
+        }
+    });
+
+    QObject::connect(&server, &RdpServer::clipboardTruncated, [](int limit) {
+        qWarning() << "Main: WARNING: Clipboard directory truncated at" << limit
+                   << "files. Some files will not be available in remote session.";
+
+        QDBusInterface notify("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                              "org.freedesktop.Notifications", QDBusConnection::sessionBus());
+        if (notify.isValid()) {
+            notify.call(QDBus::NoBlock, "Notify",
+                        "wayRDP",
+                        0u,
+                        "dialog-warning",
+                        "wayRDP Clipboard Warning",
+                        QString("Clipboard directory truncated at %1 files. Some files will not be available in remote session.").arg(limit),
+                        QStringList(),
+                        QVariantMap(),
+                        8000);
+        } else {
+            QProcess::startDetached("notify-send", QStringList()
+                << "-a" << "wayRDP"
+                << "-u" << "normal"
+                << "-i" << "dialog-warning"
+                << "wayRDP Clipboard Warning"
+                << QString("Clipboard directory truncated at %1 files. Some files will not be available in remote session.").arg(limit));
         }
     });
 

@@ -143,11 +143,25 @@ void RdpCursorManager::updateCursorShape(freerdp_peer* peer, const QImage &image
             if (cached.hotspot != newHotspot || cached.image.size() != cropped.size()) {
                 return false;
             }
-            if (cached.image.cacheKey() == targetCacheKey || cached.contentHash == targetHash) {
+            if (cached.image.cacheKey() == targetCacheKey) {
                 return true;
+            }
+            if (cached.contentHash == targetHash) {
+                // Defensively verify pixel exactness to guard against hash collisions
+                if (cached.image == cropped) {
+                    return true;
+                }
+                qWarning() << "RdpCursorManager: Hash collision detected for hash: 0x"
+                           << QString::number(targetHash, 16) << "! Pixel content differs; bypassing cache match.";
+                return false;
             }
             return cached.image == cropped;
         });
+
+    qDebug().noquote() << QString("RdpCursorManager: Cursor cache lookup: hash=0x%1, match=%2, cacheSize=%3")
+                              .arg(QString::number(targetHash, 16))
+                              .arg(itr != m_cursorCache.end() ? "HIT" : "MISS")
+                              .arg(m_cursorCache.size());
 
     if (itr != m_cursorCache.end()) {
         itr->lastUsed = std::chrono::steady_clock::now();

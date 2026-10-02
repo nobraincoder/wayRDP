@@ -82,6 +82,7 @@ private:
     bool m_hasActiveSurface{false};
 
     std::deque<QueuedVideoFrame> m_frameQueue;
+    std::deque<std::chrono::steady_clock::time_point> m_overflowTimestamps;
     std::mutex m_frameQueueMutex;
     std::condition_variable m_frameQueueCond;
 
